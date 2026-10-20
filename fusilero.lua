@@ -11,12 +11,52 @@ local REFUEL_RETRY_DELAY = 5
 -- Deja combustible compatible en FUEL_SLOT; reserva los demás índices para equipo.
 local FUEL_SLOT = 7
 local AMMO_SLOTS = { 1, 2, 3 }
-local WEAPON_MATCH = "cgs:flintlock"
--- Solo se recogen objetos de esta lista. pickup() acepta un fragmento del ID.
--- El Flintlock de Create: Gunsmithing usa cartuchos de papel.
+local PICKUP_SCAN_DELAY = 0.8
+-- IDs de armas y municiones del Create: Gunsmithing instalado.
+-- pickup() recibe el ID como filtro; los tipos se prueban de uno en uno.
 local ROLE_DROPS = {
     { match = "cgs:flintlock", kind = "weapon" },
+    { match = "cgs:revolver", kind = "weapon" },
+    { match = "cgs:shotgun", kind = "weapon" },
+    { match = "cgs:nailgun", kind = "weapon" },
+    { match = "cgs:gatling", kind = "weapon" },
+    { match = "cgs:blazegun", kind = "weapon" },
+    { match = "cgs:launcher", kind = "weapon" },
+    { match = "cgs:item_launcher", kind = "weapon" },
+    { match = "cgs:ballistazooka", kind = "weapon" },
+    { match = "cgs:hammer", kind = "weapon" },
+    { match = "cgs:axe", kind = "weapon" },
+
     { match = "cgs:paper_cartridge", kind = "ammo" },
+    { match = "cgs:paper_shot", kind = "ammo" },
+    { match = "cgs:round_gatling_blank", kind = "ammo" },
+    { match = "cgs:round_gatling_piercing", kind = "ammo" },
+    { match = "cgs:round_gatling", kind = "ammo" },
+    { match = "cgs:round_revolver_blank", kind = "ammo" },
+    { match = "cgs:round_revolver_piercing", kind = "ammo" },
+    { match = "cgs:round_revolver", kind = "ammo" },
+    { match = "cgs:round_shotgun_flechette_steel", kind = "ammo" },
+    { match = "cgs:round_shotgun_flechette", kind = "ammo" },
+    { match = "cgs:round_shotgun_incendiary", kind = "ammo" },
+    { match = "cgs:round_shotgun_blank", kind = "ammo" },
+    { match = "cgs:round_shotgun", kind = "ammo" },
+    { match = "cgs:nail_steel", kind = "ammo" },
+    { match = "cgs:nail", kind = "ammo" },
+    { match = "cgs:rocket_small", kind = "ammo" },
+    { match = "cgs:rocket", kind = "ammo" },
+    { match = "cgs:spear", kind = "ammo" },
+    { match = "cgs:lead_balls", kind = "ammo" },
+    { match = "cgs:shell_gatling", kind = "ammo" },
+    { match = "cgs:shell_revolver", kind = "ammo" },
+    { match = "cgs:shell_shotgun", kind = "ammo" },
+}
+local ROLE_WEAPONS = {
+    ["cgs:flintlock"] = true, ["cgs:revolver"] = true,
+    ["cgs:shotgun"] = true, ["cgs:nailgun"] = true,
+    ["cgs:gatling"] = true, ["cgs:blazegun"] = true,
+    ["cgs:launcher"] = true, ["cgs:ballistazooka"] = true,
+    ["cgs:item_launcher"] = true,
+    ["cgs:hammer"] = true, ["cgs:axe"] = true,
 }
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
@@ -72,6 +112,10 @@ local function handInfo()
     return name, tonumber(count) or 0
 end
 
+local function isRoleWeapon(itemName)
+    return type(itemName) == "string" and ROLE_WEAPONS[itemName:lower()] == true
+end
+
 local function findEmptySlot(exclude)
     for index = 0, 8 do
         if index ~= exclude then
@@ -86,6 +130,16 @@ local function findAmmoSlot()
     for _, index in ipairs(AMMO_SLOTS) do
         local _, occupied = slotInfo(index)
         if not occupied then return index end
+    end
+    for index = 0, 8 do
+        if index ~= FUEL_SLOT then
+            local prioritized = false
+            for _, ammoIndex in ipairs(AMMO_SLOTS) do
+                if index == ammoIndex then prioritized = true break end
+            end
+            local _, occupied = slotInfo(index)
+            if not prioritized and not occupied then return index end
+        end
     end
     return nil
 end
@@ -104,10 +158,8 @@ end
 -- guarda el botín en mochila y restaura el arma principal al terminar.
 local function collectRoleDrop(drop)
     local heldName = handInfo()
-    if drop.kind == "ammo" and not heldName then return false end
-    if heldName and WEAPON_MATCH ~= "" and not heldName:lower():find(WEAPON_MATCH:lower(), 1, true) then
-        return false
-    end
+    -- No toca objetos que no sean armas CG: así no aparta comida ni bloques.
+    if heldName and not isRoleWeapon(heldName) then return false end
 
     local destination
     if drop.kind == "ammo" then
@@ -162,12 +214,12 @@ local function collectRoleDrop(drop)
     return called and not apiFailed(result) and pickedName ~= nil
 end
 
+local roleDropIndex = 1
 local function collectRoleDrops()
-    for _, drop in ipairs(ROLE_DROPS) do
-        -- La mano debe estar libre durante pickup(); collectRoleDrop la libera
-        -- de forma temporal y devuelve el arma a la mano principal.
-        collectRoleDrop(drop)
-    end
+    local drop = ROLE_DROPS[roleDropIndex]
+    -- La mano se libera solo para probar este filtro, y el arma vuelve después.
+    collectRoleDrop(drop)
+    roleDropIndex = roleDropIndex % #ROLE_DROPS + 1
 end
 
 local function findFuelSlot()
@@ -186,8 +238,8 @@ local function refuelWithoutDroppingWeapon()
     local heldName = handInfo()
     local temporarySlot
     if heldName then
-        if WEAPON_MATCH ~= "" and not heldName:lower():find(WEAPON_MATCH:lower(), 1, true) then
-            return false, "la mano principal no contiene el arma configurada"
+        if not isRoleWeapon(heldName) then
+            return false, "la mano principal no contiene un arma Create: Gunsmithing"
         end
         temporarySlot = findEmptySlot(fuelSlot)
         if not temporarySlot then return false, "sin ranura libre para guardar el arma temporalmente" end
@@ -226,8 +278,8 @@ end
 local function reportLoadout()
     local weapon = handInfo()
     print("Inventario Fusilero: arma en mano=" .. tostring(weapon or "vacía") .. "; combustible=ranura " .. FUEL_SLOT .. ".")
-    if WEAPON_MATCH ~= "" and weapon and not weapon:lower():find(WEAPON_MATCH:lower(), 1, true) then
-        print("Aviso: configura WEAPON_MATCH para el ID de tu arma o colócala en la mano principal.")
+    if weapon and not isRoleWeapon(weapon) then
+        print("Aviso: autorrepostaje/recogida solo apartan temporalmente armas Create: Gunsmithing.")
     end
     local ammo = {}
     for _, index in ipairs(AMMO_SLOTS) do
@@ -298,12 +350,13 @@ local function patrol(home, state, unit)
     }
     local nextPoint = 1
     local lastRefuelAttempt = -REFUEL_RETRY_DELAY
+    local lastRoleDropScan = -PICKUP_SCAN_DELAY
     local lastAlert = -ALERT_DELAY
 
     print("Rol Fusilero activo: patrulla y combate básico.")
     print("Objetivos autorizados: " .. #TARGET_TYPES .. " tipos de criatura.")
     print("Autorrepostaje al bajar de " .. REFUEL_AT .. " unidades de combustible.")
-    print("Recogida selectiva: Flintlock y cartuchos de papel; munición en ranuras 1-3.")
+    print("Recogida CG: armas y munición reconocidas; búsqueda rotativa de objetos tirados.")
     reportLoadout()
     print("Comandos chat: !jarvis " .. tostring(unit.name or "Android") .. " hold|resume|return|status")
     print("Pulsa ENTER para detener.")
@@ -323,7 +376,10 @@ local function patrol(home, state, unit)
 
         -- currentTask() devuelve "idle" cuando la tarea de movimiento/ataque termina.
         if task == "idle" then
-            collectRoleDrops()
+            if os.clock() - lastRoleDropScan >= PICKUP_SCAN_DELAY then
+                collectRoleDrops()
+                lastRoleDropScan = os.clock()
+            end
             local fuel = android.fuelLevel()
             if fuel < REFUEL_AT and os.clock() - lastRefuelAttempt >= REFUEL_RETRY_DELAY then
                 local beforeRefuel = fuel
