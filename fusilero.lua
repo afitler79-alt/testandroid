@@ -11,7 +11,13 @@ local REFUEL_RETRY_DELAY = 5
 -- Deja combustible compatible en FUEL_SLOT; reserva los demás índices para equipo.
 local FUEL_SLOT = 7
 local AMMO_SLOTS = { 1, 2, 3 }
-local WEAPON_MATCH = "cgs:" -- ID de Create: Gunsmithing; cámbialo si usas otra arma
+local WEAPON_MATCH = "cgs:flintlock"
+-- Solo se recogen objetos de esta lista. pickup() acepta un fragmento del ID.
+-- El Flintlock de Create: Gunsmithing usa cartuchos de papel.
+local ROLE_DROPS = {
+    { match = "cgs:flintlock", kind = "weapon" },
+    { match = "cgs:paper_cartridge", kind = "ammo" },
+}
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
 -- Debe coincidir con el prefijo que manda el Messenger del Pocket Computer.
@@ -23,7 +29,27 @@ local TARGET_TYPES = {
     "husk", "stray", "phantom", "pillager", "vindicator", "evoker",
     "ravager", "cave_spider", "silverfish", "blaze", "ghast",
     "magma_cube", "hoglin", "zoglin", "wither_skeleton", "guardian",
-    "elder_guardian", "shulker", "vex", "warden",
+    "elder_guardian", "shulker", "vex", "warden", "endermite", "slime",
+    "piglin_brute",
+
+    -- Alex's Mobs: entidades registradas como monstruos/hostiles en el mod.
+    "alexsmobs:bone_serpent", "alexsmobs:crimson_mosquito",
+    "alexsmobs:centipede_head", "alexsmobs:mimicube", "alexsmobs:soul_vulture",
+    "alexsmobs:guster", "alexsmobs:warped_mosco", "alexsmobs:straddler",
+    "alexsmobs:dropbear", "alexsmobs:void_worm", "alexsmobs:rocky_roller",
+    "alexsmobs:skelewag", "alexsmobs:farseer", "alexsmobs:skreecher",
+    "alexsmobs:murmur",
+
+    -- Ars Nouveau: solo los cuatro Wilden hostiles; no familiares ni invocaciones.
+    "ars_nouveau:wilden_hunter", "ars_nouveau:wilden_stalker",
+    "ars_nouveau:wilden_guardian", "ars_nouveau:wilden_boss",
+
+    -- Northstar: zombis y fauna peligrosa de los planetas.
+    "northstar:frozen_zombie", "northstar:mars_worm", "northstar:mars_cobra",
+    "northstar:mercury_raptor", "northstar:venus_mimic", "northstar:venus_scorpion",
+
+    -- Quark; se excluye Foxhound porque puede estar domesticado.
+    "quark:forgotten", "quark:wraith",
 }
 
 local function slotInfo(index)
@@ -54,6 +80,94 @@ local function findEmptySlot(exclude)
         end
     end
     return nil
+end
+
+local function findAmmoSlot()
+    for _, index in ipairs(AMMO_SLOTS) do
+        local _, occupied = slotInfo(index)
+        if not occupied then return index end
+    end
+    return nil
+end
+
+local function findAnyEmptySlot(excludeA, excludeB)
+    for index = 0, 8 do
+        if index ~= FUEL_SLOT and index ~= excludeA and index ~= excludeB then
+            local _, occupied = slotInfo(index)
+            if not occupied then return index end
+        end
+    end
+    return nil
+end
+
+-- Recoge solo los IDs de ROLE_DROPS. Aparta el arma en una ranura libre,
+-- guarda el botín en mochila y restaura el arma principal al terminar.
+local function collectRoleDrop(drop)
+    local heldName = handInfo()
+    if drop.kind == "ammo" and not heldName then return false end
+    if heldName and WEAPON_MATCH ~= "" and not heldName:lower():find(WEAPON_MATCH:lower(), 1, true) then
+        return false
+    end
+
+    local destination
+    if drop.kind == "ammo" then
+        destination = findAmmoSlot()
+    elseif heldName then
+        destination = findAnyEmptySlot()
+    end
+    if drop.kind == "ammo" and not destination then return false end
+    if heldName and not destination then return false end
+
+    local temporarySlot
+    if heldName then
+        temporarySlot = findEmptySlot(FUEL_SLOT)
+        if not temporarySlot or temporarySlot == destination then
+            temporarySlot = findAnyEmptySlot(destination)
+        end
+        if not temporarySlot then return false end
+        local stored, storeErr = pcall(android.storeItem, temporarySlot)
+        if not stored or apiFailed(storeErr) then return false end
+    end
+
+    local called, result = pcall(android.pickup, drop.match)
+    local pickedName = handInfo()
+    if called and not apiFailed(result) and pickedName and drop.kind == "weapon" and not temporarySlot then
+        print("Recogido " .. pickedName .. "; queda equipada en la mano principal.")
+        return true
+    end
+
+    if called and not apiFailed(result) and pickedName then
+        local stored, storeErr = pcall(android.storeItem, destination)
+        if not stored or apiFailed(storeErr) then
+            -- Si almacenar falla, conservar el objeto en mano es más seguro que soltarlo.
+            if temporarySlot then pcall(android.equipSlot, temporarySlot) end
+            print("No pude guardar " .. drop.match .. "; quedó en la mano.")
+            return false
+        end
+        if not pickedName:lower():find(drop.match:lower(), 1, true) then
+            print("Recogido " .. pickedName .. " en ranura " .. destination .. " (revisa el filtro " .. drop.match .. ").")
+        else
+            print("Recogido " .. pickedName .. " en ranura " .. destination .. ".")
+        end
+    end
+
+    if temporarySlot then
+        local restored, restoreErr = pcall(android.equipSlot, temporarySlot)
+        if not restored or apiFailed(restoreErr) then
+            print("Aviso: no pude restaurar el arma desde la ranura " .. temporarySlot .. ".")
+        end
+    elseif not pickedName then
+        -- Sin objeto en mano y sin recogida, no hay nada que restaurar.
+    end
+    return called and not apiFailed(result) and pickedName ~= nil
+end
+
+local function collectRoleDrops()
+    for _, drop in ipairs(ROLE_DROPS) do
+        -- La mano debe estar libre durante pickup(); collectRoleDrop la libera
+        -- de forma temporal y devuelve el arma a la mano principal.
+        collectRoleDrop(drop)
+    end
 end
 
 local function findFuelSlot()
@@ -189,6 +303,7 @@ local function patrol(home, state, unit)
     print("Rol Fusilero activo: patrulla y combate básico.")
     print("Objetivos autorizados: " .. #TARGET_TYPES .. " tipos de criatura.")
     print("Autorrepostaje al bajar de " .. REFUEL_AT .. " unidades de combustible.")
+    print("Recogida selectiva: Flintlock y cartuchos de papel; munición en ranuras 1-3.")
     reportLoadout()
     print("Comandos chat: !jarvis " .. tostring(unit.name or "Android") .. " hold|resume|return|status")
     print("Pulsa ENTER para detener.")
@@ -208,6 +323,7 @@ local function patrol(home, state, unit)
 
         -- currentTask() devuelve "idle" cuando la tarea de movimiento/ataque termina.
         if task == "idle" then
+            collectRoleDrops()
             local fuel = android.fuelLevel()
             if fuel < REFUEL_AT and os.clock() - lastRefuelAttempt >= REFUEL_RETRY_DELAY then
                 local beforeRefuel = fuel
