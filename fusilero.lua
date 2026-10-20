@@ -1,7 +1,6 @@
 -- ═══════════════════════════════════════════════════════════════
 -- Rol Fusilero v3 (CC:Androids 1.3.0 / Forge 1.20.1)
--- Patrulla, dispara y recarga con Create: Gunsmithing.
--- API: useEntity = disparar | useBlock = recargar | attack = melee
+-- Disparo: left-click (android.attack) | Recarga: right-click (useEntity/useBlock)
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -25,8 +24,8 @@ local OWNERS_FILE = "owners.cfg"
 -- COMBATE
 -- ═══════════════════════════════════════════════════════════════
 local COMBAT_RANGE_SQ = 14 * 14
-local MIN_RANGE_SQ = 3 * 3
-local RELOAD_COOLDOWN = 4
+local MIN_RANGE_SQ = 4 * 4
+local RELOAD_COOLDOWN = 5
 local FIRE_COOLDOWN = 0.6
 
 local MAG_CAPACITY = {
@@ -42,7 +41,7 @@ local MAG_CAPACITY = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- ITEMS: Create: Gunsmithing
+-- ITEMS
 -- ═══════════════════════════════════════════════════════════════
 local CGS_WEAPONS = {
     "cgs:flintlock", "cgs:revolver", "cgs:shotgun",
@@ -73,9 +72,6 @@ local FOOD_ITEMS = {
 
 local POTION_ITEMS = { "minecraft:potion", "minecraft:splash_potion" }
 
--- ═══════════════════════════════════════════════════════════════
--- TABLA UNIFICADA DE RECOGIDA
--- ═══════════════════════════════════════════════════════════════
 local ROLE_DROPS = {}
 for _, w in ipairs(CGS_WEAPONS) do ROLE_DROPS[#ROLE_DROPS+1] = { match=w, kind="weapon" } end
 for _, a in ipairs(CGS_AMMO) do ROLE_DROPS[#ROLE_DROPS+1] = { match=a, kind="ammo" } end
@@ -90,32 +86,27 @@ for _, w in ipairs(CGS_WEAPONS) do ROLE_WEAPONS[w] = true end
 -- TARGETS
 -- ═══════════════════════════════════════════════════════════════
 local TARGET_TYPES = {
-    -- Vanilla
     "zombie", "skeleton", "spider", "creeper", "witch", "drowned",
     "husk", "stray", "phantom", "pillager", "vindicator", "evoker",
     "ravager", "cave_spider", "silverfish", "blaze", "ghast",
     "magma_cube", "hoglin", "zoglin", "wither_skeleton", "guardian",
     "elder_guardian", "shulker", "vex", "warden", "endermite", "slime",
     "piglin_brute",
-    -- Alex's Mobs
     "alexsmobs:bone_serpent", "alexsmobs:crimson_mosquito",
     "alexsmobs:centipede_head", "alexsmobs:mimicube", "alexsmobs:soul_vulture",
     "alexsmobs:guster", "alexsmobs:warped_mosco", "alexsmobs:straddler",
     "alexsmobs:dropbear", "alexsmobs:void_worm", "alexsmobs:rocky_roller",
     "alexsmobs:skelewag", "alexsmobs:farseer", "alexsmobs:skreecher",
     "alexsmobs:murmur",
-    -- Ars Nouveau
     "ars_nouveau:wilden_hunter", "ars_nouveau:wilden_stalker",
     "ars_nouveau:wilden_guardian", "ars_nouveau:wilden_boss",
-    -- Northstar
     "northstar:frozen_zombie", "northstar:mars_worm", "northstar:mars_cobra",
     "northstar:mercury_raptor", "northstar:venus_mimic", "northstar:venus_scorpion",
-    -- Quark
     "quark:forgotten", "quark:wraith",
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- ESTADO GLOBAL
+-- ESTADO
 -- ═══════════════════════════════════════════════════════════════
 local lastFireTime = 0
 local lastReloadTime = 0
@@ -196,7 +187,7 @@ local function findSlotWithItem(itemList)
         if occupied and name then
             local lower = name:lower()
             for _, item in ipairs(itemList) do
-                if lower == item then return index, name end
+                if lower == item then return index end
             end
         end
     end
@@ -220,18 +211,18 @@ local function getMagCapacity()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE: Disparo y recarga
+-- COMBATE
 -- ═══════════════════════════════════════════════════════════════
+
+-- LEFT-CLICK = disparar
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
 
     local name = handInfo()
-    if not name or not isRoleWeapon(name) then
-        return false
-    end
+    if not name or not isRoleWeapon(name) then return false end
 
-    local ok, result = pcall(android.useEntity, mob.uuid)
+    local ok, result = pcall(android.attack, mob.uuid)
     if not ok then return false end
     if apiFailed(result) then return false end
 
@@ -240,7 +231,11 @@ local function fireAt(mob)
     return true
 end
 
-local function tryReload()
+-- RIGHT-CLICK = recargar (simula tecla R)
+-- Estrategia: useEntity al mob (right-click) → CGS interpreta como recarga
+-- Si falla, useBlock al suelo. Si todo falla, el arma auto-recarga al
+-- intentar atacar con el mag vacío (CGS behavior).
+local function tryReload(mob)
     local now = os.clock()
     if now - lastReloadTime < RELOAD_COOLDOWN then return false end
 
@@ -252,29 +247,43 @@ local function tryReload()
         return false
     end
 
-    -- Right-click sobre el bloque bajo los pies → CGS recarga si el mag está vacío
     local self = android.getSelf()
-    local bx = math.floor(self.posX)
-    local by = math.floor(self.posY) - 1
-    local bz = math.floor(self.posZ)
+    local success = false
 
-    local ok, result = pcall(android.useBlock, bx, by, bz)
-    if not ok or apiFailed(result) then
-        -- Probar bloque adyacente
-        ok, result = pcall(android.useBlock, bx + 1, by, bz)
-        if not ok or apiFailed(result) then
-            ok, result = pcall(android.useBlock, bx, by, bz + 1)
-        end
-        if not ok or apiFailed(result) then
-            print("No se pudo recargar (bloque no usable).")
-            return false
-        end
+    -- Intento 1: right-click al mob (useEntity)
+    if mob and mob.uuid then
+        local ok, result = pcall(android.useEntity, mob.uuid)
+        if ok and not apiFailed(result) then success = true end
     end
 
-    lastReloadTime = now
-    shotsFired = 0
-    print("Recarga realizada (mag=" .. tostring(cap) .. ").")
-    return true
+    -- Intento 2: right-click al suelo
+    if not success then
+        local bx = math.floor(self.posX)
+        local by = math.floor(self.posY) - 1
+        local bz = math.floor(self.posZ)
+        local ok, result = pcall(android.useBlock, bx, by, bz)
+        if ok and not apiFailed(result) then success = true end
+    end
+
+    -- Intento 3: right-click a bloque adyacente
+    if not success then
+        local bx = math.floor(self.posX) + 1
+        local by = math.floor(self.posY)
+        local bz = math.floor(self.posZ)
+        local ok, result = pcall(android.useBlock, bx, by, bz)
+        if ok and not apiFailed(result) then success = true end
+    end
+
+    if success then
+        lastReloadTime = now
+        shotsFired = 0
+        print("Recarga OK (mag=" .. tostring(cap) .. ").")
+    else
+        print("Recarga manual falló; el arma auto-recargará al próximo disparo.")
+        lastReloadTime = now
+        shotsFired = 0
+    end
+    return success
 end
 
 local function engage(mob)
@@ -282,9 +291,9 @@ local function engage(mob)
     local dx = mob.posX - self.posX
     local dy = mob.posY - self.posY
     local dz = mob.posZ - self.posZ
-    local distSq = dx * dx + dy * dy + dz * dz
+    local distSq = dx*dx + dy*dy + dz*dz
 
-    tryReload()
+    tryReload(mob)
 
     if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
@@ -300,7 +309,7 @@ local function engage(mob)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- SUPERVIVENCIA: Comida y pociones
+-- SUPERVIVENCIA
 -- ═══════════════════════════════════════════════════════════════
 local function tryHeal()
     local self = android.getSelf()
@@ -314,17 +323,12 @@ local function tryHeal()
         pcall(android.storeItem, tempSlot)
     end
 
-    -- Prioridad: poción > comida
-    local potionSlot = findSlotWithItem(POTION_ITEMS)
-    if not potionSlot then potionSlot = findSlotWithItem(FOOD_ITEMS) end
+    local targetSlot = findSlotWithItem(POTION_ITEMS)
+    if not targetSlot then targetSlot = findSlotWithItem(FOOD_ITEMS) end
 
-    if potionSlot then
-        pcall(android.equipSlot, potionSlot)
-        -- Right-click sobre el androide mismo no es posible; usar useBlock en el suelo
-        -- En CC:Androids, comer/beber se hace con useBlock sobre el propio androide
-        -- Alternativa: simplemente equipar y esperar que el androide lo use
-        -- Por ahora: equipar el item (el androide lo usará si está hambriento)
-        print("Equipada comida/poción para curarse (HP=" .. tostring(self.health) .. ")")
+    if targetSlot then
+        pcall(android.equipSlot, targetSlot)
+        print("Equipada comida/poción (HP=" .. tostring(self.health) .. ")")
     end
 
     if tempSlot then
@@ -333,7 +337,7 @@ local function tryHeal()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- RECOGIDA DE BOTÍN
+-- RECOGIDA
 -- ═══════════════════════════════════════════════════════════════
 local function collectRoleDrop(drop)
     local heldName = handInfo()
@@ -384,7 +388,7 @@ local function collectRoleDrop(drop)
             if temporarySlot then pcall(android.equipSlot, temporarySlot) end
             return false
         end
-        print("Recogido " .. pickedName .. " → ranura " .. tostring(destination))
+        print("Recogido " .. pickedName .. " → r" .. tostring(destination))
     end
 
     if temporarySlot then
@@ -411,7 +415,7 @@ end
 
 local function refuelWithoutDroppingWeapon()
     local fuelSlot = findFuelSlot()
-    if not fuelSlot then return false, "sin redstone en ranura " .. FUEL_SLOT end
+    if not fuelSlot then return false, "sin redstone en r" .. FUEL_SLOT end
 
     local heldName = handInfo()
     local temporarySlot
@@ -422,13 +426,13 @@ local function refuelWithoutDroppingWeapon()
         temporarySlot = findEmptySlot(fuelSlot)
         if not temporarySlot then return false, "sin ranura libre" end
         local ok, err = pcall(android.storeItem, temporarySlot)
-        if not ok or apiFailed(err) then return false, "no se pudo guardar arma" end
+        if not ok or apiFailed(err) then return false, "no se guardó el arma" end
     end
 
     local equipped, equipErr = pcall(android.equipSlot, fuelSlot)
     if not equipped or apiFailed(equipErr) then
         if temporarySlot then pcall(android.equipSlot, temporarySlot) end
-        return false, "no se pudo equipar combustible"
+        return false, "no se equipó el combustible"
     end
 
     local before = android.fuelLevel()
@@ -442,7 +446,7 @@ local function refuelWithoutDroppingWeapon()
     end
 
     if not called then return false, tostring(result) end
-    if apiFailed(result) then return false, "CC:Androids rechazó el combustible" end
+    if apiFailed(result) then return false, "rechazado" end
     return after > before, "fuel → " .. tostring(after)
 end
 
@@ -453,21 +457,17 @@ local function reportLoadout()
     local weapon = handInfo()
     print("═══ Fusilero v3 ═══")
     print("Arma: " .. tostring(weapon or "vacía"))
-    local fuelName = slotInfo(FUEL_SLOT)
-    print("Fuel (r" .. FUEL_SLOT .. "): " .. tostring(fuelName or "—"))
-    local btName = slotInfo(BACKTANK_SLOT)
-    print("Backtank (r" .. BACKTANK_SLOT .. "): " .. tostring(btName or "—"))
-    local foodName = slotInfo(FOOD_SLOT)
-    print("Comida (r" .. FOOD_SLOT .. "): " .. tostring(foodName or "—"))
-    local potName = slotInfo(POTION_SLOT)
-    print("Poción (r" .. POTION_SLOT .. "): " .. tostring(potName or "—"))
+    print("Fuel r" .. FUEL_SLOT .. ": " .. tostring(slotInfo(FUEL_SLOT) or "—"))
+    print("Backtank r" .. BACKTANK_SLOT .. ": " .. tostring(slotInfo(BACKTANK_SLOT) or "—"))
+    print("Comida r" .. FOOD_SLOT .. ": " .. tostring(slotInfo(FOOD_SLOT) or "—"))
+    print("Poción r" .. POTION_SLOT .. ": " .. tostring(slotInfo(POTION_SLOT) or "—"))
     local ammo = {}
     for _, i in ipairs(AMMO_SLOTS) do
         local n, o = slotInfo(i)
         if o then ammo[#ammo+1] = "r" .. i .. "=" .. tostring(n) end
     end
     print("Ammo: " .. (#ammo > 0 and table.concat(ammo, ", ") or "vacía"))
-    print("Objetivos: " .. #TARGET_TYPES .. " tipos")
+    print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
 
@@ -496,7 +496,7 @@ local function loadOwners()
         print("Propietarios: " .. #names)
         return owners
     end
-    print("Primera vez: escribe nombres de jugadores (separados por comas):")
+    print("Primera vez: nombres de jugadores (comas):")
     local owners, names = parseOwners(read())
     while #names == 0 do
         print("Escribe al menos un nombre:")
@@ -506,7 +506,7 @@ local function loadOwners()
     if not file then return nil end
     file.write(table.concat(names, "\n") .. "\n")
     file.close()
-    print("Guardado en " .. OWNERS_FILE)
+    print("Guardado.")
     return owners
 end
 
@@ -546,7 +546,7 @@ local function listenForCommands(unit, state, owners)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BÚSQUEDA DE HOSTILES
+-- BÚSQUEDA
 -- ═══════════════════════════════════════════════════════════════
 local function findHostile()
     local self = android.getSelf()
@@ -625,7 +625,7 @@ local function patrol(home, state, unit)
                 lastRefuelAttempt = os.clock()
                 fuel = android.fuelLevel()
                 if success and fuel > beforeFuel then
-                    print("Repostaje OK → " .. tostring(fuel))
+                    print("Repostaje → " .. tostring(fuel))
                 else
                     print("Repostaje: " .. tostring(reason))
                 end
@@ -644,7 +644,7 @@ local function patrol(home, state, unit)
                         lastTarget = mob.uuid
                         shotsFired = 0
                         if os.clock() - lastAlert >= ALERT_DELAY then
-                            pcall(android.sendChatMessage, "ALERTA: " .. mobType .. " → abriendo fuego.")
+                            pcall(android.sendChatMessage, "ALERTA: " .. mobType .. " → fuego.")
                             lastAlert = os.clock()
                         end
                     end
