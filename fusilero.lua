@@ -1,6 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════
--- Rol Fusilero v3 (CC:Androids 1.3.0 / Forge 1.20.1)
--- Disparo: left-click (android.attack) | Recarga: right-click (useEntity/useBlock)
+-- Rol Fusilero v4 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- Disparo: android.attack (left-click) | Recarga: useEntity/useBlock
+-- Búsqueda de munición en TODAS las ranuras (0-8).
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -9,10 +10,6 @@ local PATROL_RADIUS = 6
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 5
 local FUEL_SLOT = 7
-local AMMO_SLOTS = { 1, 2, 3 }
-local FOOD_SLOT = 4
-local POTION_SLOT = 5
-local BACKTANK_SLOT = 8
 local PICKUP_SCAN_DELAY = 0.8
 local HEAL_AT = 12
 local HEAL_RETRY_DELAY = 8
@@ -113,6 +110,7 @@ local lastReloadTime = 0
 local shotsFired = 0
 local currentMagCap = 8
 local lastTarget = nil
+local roleDropIndex = 1
 
 -- ═══════════════════════════════════════════════════════════════
 -- UTILIDADES
@@ -120,8 +118,15 @@ local lastTarget = nil
 local function slotInfo(index)
     local ok, name = pcall(android.getSlotInfo, index)
     if not ok then return nil, false end
-    local normalized = type(name) == "string" and name:lower() or ""
-    return name, normalized ~= "" and normalized ~= "minecraft:air" and normalized ~= "air"
+    -- getSlotInfo puede devolver: string (nombre), false (air), nil
+    local normalized
+    if type(name) == "string" then
+        normalized = name:lower()
+    else
+        normalized = ""
+    end
+    local occupied = normalized ~= "" and normalized ~= "minecraft:air" and normalized ~= "air" and normalized ~= "false"
+    return name, occupied
 end
 
 local function apiFailed(value)
@@ -141,31 +146,22 @@ local function isRoleWeapon(itemName)
     return type(itemName) == "string" and ROLE_WEAPONS[itemName:lower()] == true
 end
 
+-- Comprueba si un nombre de item coincide con alguno de la lista (parcial)
+local function matchesList(itemName, list)
+    if type(itemName) ~= "string" then return false end
+    local lower = itemName:lower()
+    for _, item in ipairs(list) do
+        -- Match parcial: el nombre del item puede incluir NBT o prefijos
+        if lower:find(item, 1, true) then return true end
+    end
+    return false
+end
+
 local function findEmptySlot(exclude)
     for index = 0, 8 do
         if index ~= exclude then
             local _, occupied = slotInfo(index)
             if not occupied then return index end
-        end
-    end
-    return nil
-end
-
-local function findAmmoSlot()
-    for _, index in ipairs(AMMO_SLOTS) do
-        local _, occupied = slotInfo(index)
-        if not occupied then return index end
-    end
-    for index = 0, 8 do
-        if index ~= FUEL_SLOT and index ~= FOOD_SLOT and index ~= POTION_SLOT and index ~= BACKTANK_SLOT then
-            local prioritized = false
-            for _, ammoIndex in ipairs(AMMO_SLOTS) do
-                if index == ammoIndex then prioritized = true break end
-            end
-            if not prioritized then
-                local _, occupied = slotInfo(index)
-                if not occupied then return index end
-            end
         end
     end
     return nil
@@ -181,40 +177,81 @@ local function findAnyEmptySlot(excludeA, excludeB)
     return nil
 end
 
-local function findSlotWithItem(itemList)
+-- BUSCA MUNICIÓN EN TODAS LAS RANURAS (0-8)
+-- Devuelve el índice de la ranura o nil
+local function findAmmoSlot()
     for index = 0, 8 do
-        local name, occupied = slotInfo(index)
-        if occupied and name then
-            local lower = name:lower()
-            for _, item in ipairs(itemList) do
-                if lower == item then return index end
+        if index ~= FUEL_SLOT then
+            local name, occupied = slotInfo(index)
+            if occupied and name and matchesList(name, CGS_AMMO) then
+                return index
             end
         end
     end
     return nil
 end
 
+-- Verifica si HAY munición en cualquier ranura
 local function hasAmmoInReserves()
-    for _, index in ipairs(AMMO_SLOTS) do
-        local _, occupied = slotInfo(index)
-        if occupied then return true end
+    for index = 0, 8 do
+        if index ~= FUEL_SLOT then
+            local name, occupied = slotInfo(index)
+            if occupied and name and matchesList(name, CGS_AMMO) then
+                return true
+            end
+        end
     end
     return false
+end
+
+-- Encuentra una ranura con un item de la lista
+local function findSlotWithItem(itemList)
+    for index = 0, 8 do
+        local name, occupied = slotInfo(index)
+        if occupied and name and matchesList(name, itemList) then
+            return index
+        end
+    end
+    return nil
 end
 
 local function getMagCapacity()
     local name = handInfo()
     if name then
-        currentMagCap = MAG_CAPACITY[name:lower()] or 8
+        -- Match parcial por si el nombre incluye NBT
+        local lower = name:lower()
+        for key, cap in pairs(MAG_CAPACITY) do
+            if lower:find(key, 1, true) then
+                currentMagCap = cap
+                return cap
+            end
+        end
+        currentMagCap = 8
     end
     return currentMagCap
 end
 
 -- ═══════════════════════════════════════════════════════════════
+-- DIAGNÓSTICO: volcar todo el inventario
+-- ═══════════════════════════════════════════════════════════════
+local function dumpInventory()
+    local lines = {}
+    local weapon = handInfo()
+    lines[#lines+1] = "MANO: " .. tostring(weapon or "vacía")
+    for index = 0, 8 do
+        local name, occupied = slotInfo(index)
+        if occupied then
+            lines[#lines+1] = "r" .. index .. ": " .. tostring(name)
+        else
+            lines[#lines+1] = "r" .. index .. ": [vacía]"
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+-- ═══════════════════════════════════════════════════════════════
 -- COMBATE
 -- ═══════════════════════════════════════════════════════════════
-
--- LEFT-CLICK = disparar
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
@@ -231,10 +268,6 @@ local function fireAt(mob)
     return true
 end
 
--- RIGHT-CLICK = recargar (simula tecla R)
--- Estrategia: useEntity al mob (right-click) → CGS interpreta como recarga
--- Si falla, useBlock al suelo. Si todo falla, el arma auto-recarga al
--- intentar atacar con el mag vacío (CGS behavior).
 local function tryReload(mob)
     local now = os.clock()
     if now - lastReloadTime < RELOAD_COOLDOWN then return false end
@@ -243,14 +276,14 @@ local function tryReload(mob)
     if shotsFired < cap then return false end
 
     if not hasAmmoInReserves() then
-        print("Sin munición en reservas; no recargo.")
+        print("Sin munición CGS en ninguna ranura; no recargo.")
         return false
     end
 
     local self = android.getSelf()
     local success = false
 
-    -- Intento 1: right-click al mob (useEntity)
+    -- Intento 1: right-click al mob
     if mob and mob.uuid then
         local ok, result = pcall(android.useEntity, mob.uuid)
         if ok and not apiFailed(result) then success = true end
@@ -265,7 +298,7 @@ local function tryReload(mob)
         if ok and not apiFailed(result) then success = true end
     end
 
-    -- Intento 3: right-click a bloque adyacente
+    -- Intento 3: bloque adyacente
     if not success then
         local bx = math.floor(self.posX) + 1
         local by = math.floor(self.posY)
@@ -274,14 +307,12 @@ local function tryReload(mob)
         if ok and not apiFailed(result) then success = true end
     end
 
+    lastReloadTime = now
+    shotsFired = 0
     if success then
-        lastReloadTime = now
-        shotsFired = 0
         print("Recarga OK (mag=" .. tostring(cap) .. ").")
     else
-        print("Recarga manual falló; el arma auto-recargará al próximo disparo.")
-        lastReloadTime = now
-        shotsFired = 0
+        print("Recarga manual falló; auto-recarga al próximo disparo.")
     end
     return success
 end
@@ -345,21 +376,15 @@ local function collectRoleDrop(drop)
 
     local destination
     if drop.kind == "ammo" then
-        destination = findAmmoSlot()
+        destination = findAnyEmptySlot(FUEL_SLOT)
     elseif drop.kind == "food" then
-        destination = FOOD_SLOT
-        local _, occ = slotInfo(FOOD_SLOT)
-        if occ then destination = findAnyEmptySlot() end
+        destination = findAnyEmptySlot(FUEL_SLOT)
     elseif drop.kind == "potion" then
-        destination = POTION_SLOT
-        local _, occ = slotInfo(POTION_SLOT)
-        if occ then destination = findAnyEmptySlot() end
+        destination = findAnyEmptySlot(FUEL_SLOT)
     elseif drop.kind == "backtank" then
-        destination = BACKTANK_SLOT
-        local _, occ = slotInfo(BACKTANK_SLOT)
-        if occ then destination = findAnyEmptySlot() end
+        destination = findAnyEmptySlot(FUEL_SLOT)
     elseif heldName then
-        destination = findAnyEmptySlot()
+        destination = findAnyEmptySlot(FUEL_SLOT)
     end
 
     if destination == nil then return false end
@@ -368,7 +393,7 @@ local function collectRoleDrop(drop)
     if heldName then
         temporarySlot = findEmptySlot(FUEL_SLOT)
         if not temporarySlot or temporarySlot == destination then
-            temporarySlot = findAnyEmptySlot(destination)
+            temporarySlot = findAnyEmptySlot(destination, FUEL_SLOT)
         end
         if not temporarySlot then return false end
         local stored, storeErr = pcall(android.storeItem, temporarySlot)
@@ -397,7 +422,6 @@ local function collectRoleDrop(drop)
     return called and not apiFailed(result) and pickedName ~= nil
 end
 
-local roleDropIndex = 1
 local function collectRoleDrops()
     local drop = ROLE_DROPS[roleDropIndex]
     collectRoleDrop(drop)
@@ -455,18 +479,26 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v3 ═══")
+    print("═══ Fusilero v4 ═══")
     print("Arma: " .. tostring(weapon or "vacía"))
-    print("Fuel r" .. FUEL_SLOT .. ": " .. tostring(slotInfo(FUEL_SLOT) or "—"))
-    print("Backtank r" .. BACKTANK_SLOT .. ": " .. tostring(slotInfo(BACKTANK_SLOT) or "—"))
-    print("Comida r" .. FOOD_SLOT .. ": " .. tostring(slotInfo(FOOD_SLOT) or "—"))
-    print("Poción r" .. POTION_SLOT .. ": " .. tostring(slotInfo(POTION_SLOT) or "—"))
-    local ammo = {}
-    for _, i in ipairs(AMMO_SLOTS) do
-        local n, o = slotInfo(i)
-        if o then ammo[#ammo+1] = "r" .. i .. "=" .. tostring(n) end
+    print("--- Inventario (stash 0-8) ---")
+    for index = 0, 8 do
+        local name, occupied = slotInfo(index)
+        local label = "r" .. index .. ": "
+        if occupied then
+            label = label .. tostring(name)
+            -- Marcar tipo
+            if matchesList(name, CGS_AMMO) then label = label .. " [AMMO]"
+            elseif matchesList(name, CGS_WEAPONS) then label = label .. " [WEAPON]"
+            elseif name:lower():find("redstone", 1, true) then label = label .. " [FUEL]"
+            elseif matchesList(name, FOOD_ITEMS) then label = label .. " [FOOD]"
+            elseif matchesList(name, POTION_ITEMS) then label = label .. " [POTION]"
+            end
+        else
+            label = label .. "[vacía]"
+        end
+        print(label)
     end
-    print("Ammo: " .. (#ammo > 0 and table.concat(ammo, ", ") or "vacía"))
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -535,10 +567,13 @@ local function listenForCommands(unit, state, owners)
                     android.cancelTask()
                 elseif command == "status" then
                     local cur = android.getSelf()
-                    pcall(android.sendChatMessage, unitName .. " | v3 | " .. state.mode
+                    pcall(android.sendChatMessage, unitName .. " | v4 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(handInfo() or "—"))
+                elseif command == "dump" then
+                    -- Muestra todo el inventario en chat
+                    pcall(android.sendChatMessage, "INV:\n" .. dumpInventory())
                 end
             end
         end
@@ -584,7 +619,7 @@ local function patrol(home, state, unit)
     local lastHealAttempt = -HEAL_RETRY_DELAY
 
     reportLoadout()
-    print("Comandos: !jarvis " .. tostring(unit.name or "Android") .. " hold|resume|return|status")
+    print("Comandos: !jarvis " .. tostring(unit.name or "Android") .. " hold|resume|return|status|dump")
     print("ENTER para detener.")
 
     while true do
@@ -678,7 +713,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v3 detenido.")
+    print("Fusilero v4 detenido.")
 end
 
 local ok, err = pcall(main)
