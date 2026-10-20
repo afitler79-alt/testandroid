@@ -1,6 +1,7 @@
 -- Rol Fusilero (CC:Androids 1.3.0 / Forge 1.20.1).
 -- Patrulla un circuito corto y ataca solo los tipos de criaturas de TARGET_TYPES.
--- Ejecutar en la terminal del androide. Enter detiene y cancela su tarea activa.
+-- Funciona de forma autónoma desde la terminal del androide; no requiere el ordenador central.
+-- El control por Pocket/chat es opcional. Enter detiene y cancela su tarea activa.
 
 local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 6
@@ -13,7 +14,8 @@ local AMMO_SLOTS = { 1, 2, 3 }
 local WEAPON_MATCH = "cgs:" -- ID de Create: Gunsmithing; cámbialo si usas otra arma
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
-local COMMANDER_NAME = "CONFIGURAR_JUGADOR"
+-- Debe coincidir con el prefijo que manda el Messenger del Pocket Computer.
+local COMMANDER_NAME = "Android Mobile"
 
 -- Lista explícita de hostiles. Añade aquí los IDs que quieras autorizar.
 local TARGET_TYPES = {
@@ -153,7 +155,7 @@ local function listenForCommands(unit, state)
     while true do
         local _, data = os.pullEvent("onChatMessage")
         if type(data) == "table" and data.senderName == COMMANDER_NAME then
-            local target, command = tostring(data.message or ""):match("^!jarvis%s+(%S+)%s+(%S+)$")
+            local target, command = tostring(data.message or ""):match("^!jarvis%s+(.+)%s+(%S+)$")
             if target and command and (target:lower() == "all" or target:lower() == unitName:lower()) then
                 command = command:lower()
                 if command == "hold" then
