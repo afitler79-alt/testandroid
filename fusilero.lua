@@ -4,6 +4,8 @@
 
 local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 6
+local REFUEL_AT = 20
+local REFUEL_RETRY_DELAY = 5
 
 -- Lista explícita de hostiles. Añade aquí los IDs que quieras autorizar.
 local TARGET_TYPES = {
@@ -22,11 +24,23 @@ local function waitForStop()
 end
 
 local function findHostile()
+    local self = android.getSelf()
+    local closest, closestType, closestDistance
+
     for _, mobType in ipairs(TARGET_TYPES) do
         local mob = android.getClosestMob(mobType)
-        if mob and mob.uuid then return mob, mobType end
+        if mob and mob.uuid and mob.posX and mob.posY and mob.posZ then
+            local dx = mob.posX - self.posX
+            local dy = mob.posY - self.posY
+            local dz = mob.posZ - self.posZ
+            local distance = dx * dx + dy * dy + dz * dz
+
+            if not closestDistance or distance < closestDistance then
+                closest, closestType, closestDistance = mob, mobType, distance
+            end
+        end
     end
-    return nil, nil
+    return closest, closestType
 end
 
 local function patrol(home)
@@ -37,20 +51,45 @@ local function patrol(home)
         { x = home.x, y = home.y, z = home.z - PATROL_RADIUS },
     }
     local nextPoint = 1
+    local lastRefuelAttempt = -REFUEL_RETRY_DELAY
 
     print("Rol Fusilero activo: patrulla y combate básico.")
     print("Objetivos autorizados: " .. #TARGET_TYPES .. " tipos de criatura.")
+    print("Autorrepostaje al bajar de " .. REFUEL_AT .. " unidades de combustible.")
     print("Pulsa ENTER para detener.")
 
     while true do
+        -- currentTask() devuelve "idle" cuando la tarea de movimiento/ataque termina.
         if android.currentTask() == "idle" then
-            local mob, mobType = findHostile()
-            if mob then
-                print("Contacto hostil: " .. mobType .. ". Interceptando.")
-                android.attack(mob.uuid)
+            local fuel = android.fuelLevel()
+            if fuel < REFUEL_AT and os.clock() - lastRefuelAttempt >= REFUEL_RETRY_DELAY then
+                -- refuel() usa combustible de la mano principal. pcall permite seguir
+                -- funcionando si la mano está vacía o contiene un objeto no válido.
+                -- Se consume una unidad por intento y luego se vuelve a comprobar el nivel.
+                local beforeRefuel = fuel
+                local ok, failed, result = pcall(android.refuel, 1)
+                lastRefuelAttempt = os.clock()
+                fuel = android.fuelLevel()
+                if ok and not failed and fuel > beforeRefuel then
+                    print("Autorrepostaje completado. Combustible: " .. tostring(fuel))
+                else
+                    local reason = ok and tostring(result or "objeto no válido") or tostring(failed)
+                    print("No se pudo repostar: " .. reason .. ". Pon redstone/combustible compatible en la mano principal.")
+                end
+            end
+
+            if fuel < 1 then
+                -- No iniciar tareas que requieren movimiento sin combustible.
+                sleep(SCAN_DELAY)
             else
-                android.moveTo(points[nextPoint])
-                nextPoint = nextPoint % #points + 1
+                local mob, mobType = findHostile()
+                if mob then
+                    print("Contacto hostil: " .. mobType .. ". Interceptando.")
+                    android.attack(mob.uuid)
+                else
+                    android.moveTo(points[nextPoint])
+                    nextPoint = nextPoint % #points + 1
+                end
             end
         end
         sleep(SCAN_DELAY)
@@ -60,11 +99,6 @@ end
 local function main()
     local self = android.getSelf()
     local home = { x = self.posX, y = self.posY, z = self.posZ }
-
-    if android.fuelLevel() < 1 then
-        print("Sin combustible. Pon combustible en la mano principal y reinicia Fusilero.")
-        return
-    end
 
     parallel.waitForAny(function() patrol(home) end, waitForStop)
     android.cancelTask()
