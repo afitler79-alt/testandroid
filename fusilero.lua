@@ -122,6 +122,8 @@ local function isWep(n)
     if type(n)~="string" then return false end
     if isAmmo(n) then return false end
     local l=n:lower()
+    -- Permite armas nuevas de CGS/NTGL aunque todavía no estén en la lista.
+    if l:find("cgs:",1,true) or l:find("cbc:",1,true) then return true end
     for _,i in ipairs(WEAPONS) do
         if l:find(i,1,true) then return true end
     end
@@ -313,9 +315,43 @@ end
 local function findMob()
     local s = android.getSelf()
     local best, bestType, bestD
+
+    -- Algunas versiones de CC:Androids devuelven mejor la lista completa
+    -- que getClosestMob(tipo). Primero revisamos los mobs cercanos y usamos
+    -- el tipo/ID que exponga la tabla.
+    local nearbyOk, nearby = pcall(android.getNearbyMobs)
+    if nearbyOk and type(nearby)=="table" then
+        for _,m in pairs(nearby) do
+            if type(m)=="table" and m.uuid and m.posX and m.posY and m.posZ then
+                local label=tostring(m.type or m.entityType or m.name or ""):lower()
+                local matchedType
+                for _,t in ipairs(TARGETS) do
+                    local short=t:gsub("^[^:]+:","")
+                    if label:find(t,1,true) or label:find(short,1,true) then
+                        matchedType=t
+                        break
+                    end
+                end
+                if matchedType then
+                    local dx=m.posX-s.posX
+                    local dy=m.posY-s.posY
+                    local dz=m.posZ-s.posZ
+                    local d=dx*dx+dy*dy+dz*dz
+                    if not bestD or d<bestD then
+                        best,bestType,bestD=m,matchedType,d
+                    end
+                end
+            end
+        end
+    end
+
+    if best then return best,bestType end
+
+    -- Respaldo para versiones que no implementen getNearbyMobs().
     for _,t in ipairs(TARGETS) do
         local ok,m = pcall(android.getClosestMob,t)
-        if ok and type(m)=="table" and m.uuid and m.posX then
+        if ok and type(m)=="table" and m.uuid
+            and m.posX and m.posY and m.posZ then
             local dx=m.posX-s.posX
             local dy=m.posY-s.posY
             local dz=m.posZ-s.posZ
@@ -342,7 +378,13 @@ local function combat(mob)
     end
 
     w=hand()
-    if not w or not isWep(w) then return false end
+    if not w or not isWep(w) then
+        if os.clock()-lastAttackError>=5 then
+            print("No ataco: objeto en mano no reconocido como arma CGS: "..tostring(w or "vacio"))
+            lastAttackError=os.clock()
+        end
+        return false
+    end
 
     -- CGS/NTGL usa la interacción de la entidad para disparar y recargar.
     -- useEntity mueve al androide hasta el objetivo y usa el arma equipada.
