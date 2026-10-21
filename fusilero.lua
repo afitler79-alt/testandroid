@@ -1,9 +1,13 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v8 (CC:Androids 1.3.0 / Forge 1.20.1)
--- Armas Minecraft vanilla: melee + arco.
---   Melee: android.attack(uuid)  → left click → golpea
---   Arco:  android.useEntity(uuid) → right click → dispara flecha
--- Flechas: deben estar en la hotbar/inventario del android.
+-- ROL FUSILERO v9 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- Modpack: Create + Gunsmithing 1.4.4 + NTGL 3.1.2 + Big Cannons
+--
+-- NTGL permite que entidades vivas usen armas:
+--   android.attack(uuid)    → LEFT CLICK → NTGL dispara el arma
+--   android.useEntity(uuid) → RIGHT CLICK → NTGL recarga
+--   android.useBlock(x,y,z) → RIGHT CLICK al bloque → NTGL recarga
+--
+-- La munición debe estar en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -22,91 +26,132 @@ local OWNERS_FILE = "owners.cfg"
 -- ═══════════════════════════════════════════════════════════════
 -- COMBATE
 -- ═══════════════════════════════════════════════════════════════
-local COMBAT_RANGE_SQ = 14 * 14   -- Rango arco (~14 bloques)
-local MELEE_RANGE_SQ = 4 * 4      -- Rango melee (~4 bloques)
-local MIN_RANGE_SQ = 2 * 2        -- No acercarse a menos de 2 bloques
-local FIRE_COOLDOWN = 0.5         -- Pausa entre disparos/golpes
+local COMBAT_RANGE_SQ = 14 * 14
+local MIN_RANGE_SQ = 4 * 4
+local FIRE_COOLDOWN = 0.5
+local RELOAD_COOLDOWN = 3
 
--- ═══════════════════════════════════════════════════════════════
--- ARMAS VANILLA
--- ═══════════════════════════════════════════════════════════════
-local MELEE_WEAPONS = {
-    "minecraft:iron_sword",
-    "minecraft:diamond_sword",
-    "minecraft:netherite_sword",
-    "minecraft:stone_sword",
-    "minecraft:iron_axe",
-    "minecraft:diamond_axe",
-    "minecraft:netherite_axe",
-    "minecraft:stone_axe",
-    "minecraft:iron_pickaxe",
-    "minecraft:diamond_pickaxe",
-    "minecraft:netherite_pickaxe",
-    "minecraft:stone_pickaxe",
-    "minecraft:iron_shovel",
-    "minecraft:diamond_shovel",
-    "minecraft:netherite_shovel",
-    "minecraft:stone_shovel",
-    "minecraft:trident",
-}
-
-local RANGED_WEAPONS = {
-    "minecraft:bow",
-    "minecraft:crossbow",
+local MAG_CAPACITY = {
+    ["cgs:flintlock"] = 1,
+    ["cgs:revolver"] = 6,
+    ["cgs:shotgun"] = 1,
+    ["cgs:nailgun"] = 32,
+    ["cgs:gatling"] = 32,
+    ["cgs:blazegun"] = 32,
+    ["cgs:launcher"] = 1,
+    ["cgs:pneumatic_hammer"] = 1,
+    ["cgs:frag_grenade"] = 1,
+    -- Big Cannons
+    ["cbc:ballistic_pistol"] = 8,
+    ["cbc:ballistic_carbine"] = 16,
+    ["cbc:ballistic_shotgun"] = 2,
+    ["cbc:ballistic_sniper"] = 1,
+    ["cbc:ballistic_gatling"] = 64,
+    ["cbc:ballistic_grenade_launcher"] = 4,
+    ["cbc:ballistic_minigun"] = 100,
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- MUNICIÓN
+-- ARMAS: Create: Gunsmithing (cgs:)
 -- ═══════════════════════════════════════════════════════════════
-local AMMO_ITEMS = {
-    "minecraft:arrow",
-    "minecraft:spectral_arrow",
-    "minecraft:tipped_arrow",
-    "minecraft:fire_charge",
+local CGS_WEAPONS = {
+    "cgs:flintlock",
+    "cgs:revolver",
+    "cgs:shotgun",
+    "cgs:nailgun",
+    "cgs:gatling",
+    "cgs:blazegun",
+    "cgs:launcher",
+    "cgs:pneumatic_hammer",
+    "cgs:frag_grenade",
 }
 
+-- ARMAS: Create: Big Cannons (cbc:)
+local CBC_WEAPONS = {
+    "cbc:ballistic_pistol",
+    "cbc:ballistic_carbine",
+    "cbc:ballistic_shotgun",
+    "cbc:ballistic_sniper",
+    "cbc:ballistic_gatling",
+    "cbc:ballistic_grenade_launcher",
+    "cbc:ballistic_minigun",
+    "cbc:ballistic_cannon",
+}
+
+local ALL_WEAPONS = {}
+for _, w in ipairs(CGS_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
+for _, w in ipairs(CBC_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
+
 -- ═══════════════════════════════════════════════════════════════
--- OTROS ITEMS (recogida)
+-- MUNICIÓN: CGS
+-- ═══════════════════════════════════════════════════════════════
+local CGS_AMMO = {
+    "cgs:paper_cartridge",
+    "cgs:paper_shot",
+    "cgs:round_revolver",
+    "cgs:round_revolver_piercing",
+    "cgs:round_revolver_blank",
+    "cgs:round_shotgun",
+    "cgs:round_shotgun_flechette",
+    "cgs:round_shotgun_flechette_steel",
+    "cgs:round_shotgun_incendiary",
+    "cgs:round_shotgun_blank",
+    "cgs:round_gatling",
+    "cgs:round_gatling_piercing",
+    "cgs:round_gatling_blank",
+    "cgs:nail",
+    "cgs:nail_steel",
+    "cgs:rocket",
+    "cgs:rocket_small",
+    "cgs:spear",
+    "cgs:lead_balls",
+    "cgs:shell_gatling",
+    "cgs:shell_revolver",
+    "cgs:shell_shotgun",
+}
+
+-- MUNICIÓN: Big Cannons
+local CBC_AMMO = {
+    "cbc:ballistic_pistol_round",
+    "cbc:ballistic_carbine_round",
+    "cbc:ballistic_shotgun_shell",
+    "cbc:ballistic_sniper_round",
+    "cbc:ballistic_gatling_round",
+    "cbc:ballistic_grenade",
+    "cbc:ballistic_minigun_round",
+    "cbc:cannon_shot",
+    "cbc:explosive_cannon_shot",
+    "cbc:incendiary_cannon_shot",
+}
+
+local ALL_AMMO = {}
+for _, a in ipairs(CGS_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
+for _, a in ipairs(CBC_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
+
+-- ═══════════════════════════════════════════════════════════════
+-- OTROS ITEMS
 -- ═══════════════════════════════════════════════════════════════
 local FOOD_ITEMS = {
-    "minecraft:cooked_beef",
-    "minecraft:cooked_porkchop",
-    "minecraft:cooked_chicken",
-    "minecraft:cooked_mutton",
-    "minecraft:golden_carrot",
-    "minecraft:golden_apple",
-    "minecraft:bread",
-    "minecraft:cooked_cod",
-    "minecraft:cooked_salmon",
+    "minecraft:cooked_beef", "minecraft:cooked_porkchop",
+    "minecraft:cooked_chicken", "minecraft:cooked_mutton",
+    "minecraft:golden_carrot", "minecraft:golden_apple",
+    "minecraft:bread", "minecraft:cooked_cod", "minecraft:cooked_salmon",
+    "farmersdelight:beef_ribs", "farmersdelight:meat_on_a_stick",
+    "farmersdelight:harvest_stew", "farmersdelight:chocolate_bar",
 }
 
 local POTION_ITEMS = {
-    "minecraft:potion",
-    "minecraft:splash_potion",
+    "minecraft:potion", "minecraft:splash_potion",
 }
-
-local SHIELD_ITEM = "minecraft:shield"
 
 -- ═══════════════════════════════════════════════════════════════
 -- TABLA DE RECOGIDA
 -- ═══════════════════════════════════════════════════════════════
 local ROLE_DROPS = {}
-
-for _, item in ipairs(MELEE_WEAPONS) do
-    ROLE_DROPS[#ROLE_DROPS + 1] = { match = item, kind = "weapon" }
-end
-for _, item in ipairs(RANGED_WEAPONS) do
-    ROLE_DROPS[#ROLE_DROPS + 1] = { match = item, kind = "weapon" }
-end
-for _, item in ipairs(AMMO_ITEMS) do
-    ROLE_DROPS[#ROLE_DROPS + 1] = { match = item, kind = "ammo" }
-end
-for _, item in ipairs(FOOD_ITEMS) do
-    ROLE_DROPS[#ROLE_DROPS + 1] = { match = item, kind = "food" }
-end
-for _, item in ipairs(POTION_ITEMS) do
-    ROLE_DROPS[#ROLE_DROPS + 1] = { match = item, kind = "potion" }
-end
+for _, w in ipairs(ALL_WEAPONS) do ROLE_DROPS[#ROLE_DROPS+1] = { match=w, kind="weapon" } end
+for _, a in ipairs(ALL_AMMO) do ROLE_DROPS[#ROLE_DROPS+1] = { match=a, kind="ammo" } end
+for _, f in ipairs(FOOD_ITEMS) do ROLE_DROPS[#ROLE_DROPS+1] = { match=f, kind="food" } end
+for _, p in ipairs(POTION_ITEMS) do ROLE_DROPS[#ROLE_DROPS+1] = { match=p, kind="potion" } end
 
 -- ═══════════════════════════════════════════════════════════════
 -- TARGETS
@@ -134,14 +179,20 @@ local TARGET_TYPES = {
     "northstar:mars_cobra", "northstar:mercury_raptor",
     "northstar:venus_mimic", "northstar:venus_scorpion",
     "quark:forgotten", "quark:wraith",
+    "vampirism:vampire", "vampirism:ghoul",
+    "werewolves:werewolf",
 }
 
 -- ═══════════════════════════════════════════════════════════════
 -- ESTADO
 -- ═══════════════════════════════════════════════════════════════
 local lastFireTime = 0
+local lastReloadTime = 0
+local shotsFired = 0
+local currentMagCap = 8
 local lastTarget = nil
 local roleDropIndex = 1
+local reloadFailCount = 0
 
 -- ═══════════════════════════════════════════════════════════════
 -- UTILIDADES
@@ -179,16 +230,8 @@ local function matchesList(name, list)
     return false
 end
 
-local function isMeleeWeapon(name)
-    return matchesList(name, MELEE_WEAPONS)
-end
-
-local function isRangedWeapon(name)
-    return matchesList(name, RANGED_WEAPONS)
-end
-
-local function isAnyWeapon(name)
-    return isMeleeWeapon(name) or isRangedWeapon(name)
+local function isWeapon(name)
+    return matchesList(name, ALL_WEAPONS)
 end
 
 local function findEmptySlot(exclude)
@@ -221,62 +264,96 @@ local function findSlotWithItem(list)
     return nil
 end
 
-local function hasAmmo()
-    -- Flechas en stash (para diagnóstico)
-    for index = 0, 8 do
-        local name, occupied = slotInfo(index)
-        if occupied and matchesList(name, AMMO_ITEMS) then
-            return true
+local function getMagCapacity()
+    local name = handInfo()
+    if name then
+        local lower = name:lower()
+        for key, cap in pairs(MAG_CAPACITY) do
+            if lower:find(key, 1, true) then
+                currentMagCap = cap
+                return cap
+            end
         end
     end
-    return false
+    currentMagCap = 8
+    return currentMagCap
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE
+-- COMBATE (NTGL: left click = disparar, right click = recargar)
 -- ═══════════════════════════════════════════════════════════════
 
--- MELEE: left click al mob
-local function meleeAttack(mob)
-    local now = os.clock()
-    if now - lastFireTime < FIRE_COOLDOWN then return false end
-
-    local weapon = handInfo()
-    if not weapon or not isMeleeWeapon(weapon) then return false end
-
-    local ok, result = pcall(android.attack, mob.uuid)
-    if not ok or apiFailed(result) then return false end
-
-    lastFireTime = now
-    return true
-end
-
--- ARCO/CROSSBOW: right click al mob (dispara flecha)
-local function rangedAttack(mob)
-    local now = os.clock()
-    if now - lastFireTime < FIRE_COOLDOWN then return false end
-
-    local weapon = handInfo()
-    if not weapon or not isRangedWeapon(weapon) then return false end
-
-    local ok, result = pcall(android.useEntity, mob.uuid)
-    if not ok or apiFailed(result) then return false end
-
-    lastFireTime = now
-    return true
-end
-
--- Decide qué tipo de ataque usar según el arma en mano
 local function fireAt(mob)
-    local weapon = handInfo()
-    if not weapon then return false end
+    local now = os.clock()
+    if now - lastFireTime < FIRE_COOLDOWN then return false end
 
-    if isRangedWeapon(weapon) then
-        return rangedAttack(mob)
-    elseif isMeleeWeapon(weapon) then
-        return meleeAttack(mob)
+    local weapon = handInfo()
+    if not weapon or not isWeapon(weapon) then return false end
+
+    -- LEFT CLICK → NTGL intercepta y dispara el arma
+    local ok, result = pcall(android.attack, mob.uuid)
+    if not ok then
+        if os.clock() - lastFireTime > 5 then
+            print("attack() error: " .. tostring(result))
+        end
+        return false
     end
-    return false
+    if apiFailed(result) then return false end
+
+    lastFireTime = now
+    shotsFired = shotsFired + 1
+    return true
+end
+
+local function tryReload(mob)
+    local now = os.clock()
+    if now - lastReloadTime < RELOAD_COOLDOWN then return false end
+
+    local cap = getMagCapacity()
+    if shotsFired < cap then return false end
+
+    local success = false
+
+    -- RIGHT CLICK al mob → NTGL recarga
+    if mob and mob.uuid then
+        local ok, result = pcall(android.useEntity, mob.uuid)
+        if ok and not apiFailed(result) then success = true end
+    end
+
+    -- RIGHT CLICK al suelo
+    if not success then
+        local self = android.getSelf()
+        local bx = math.floor(self.posX)
+        local by = math.floor(self.posY) - 1
+        local bz = math.floor(self.posZ)
+        local ok, result = pcall(android.useBlock, bx, by, bz)
+        if ok and not apiFailed(result) then success = true end
+    end
+
+    -- RIGHT CLICK a bloque adyacente
+    if not success then
+        local self = android.getSelf()
+        local bx = math.floor(self.posX) + 1
+        local by = math.floor(self.posY)
+        local bz = math.floor(self.posZ)
+        local ok, result = pcall(android.useBlock, bx, by, bz)
+        if ok and not apiFailed(result) then success = true end
+    end
+
+    lastReloadTime = now
+
+    if success then
+        shotsFired = 0
+        reloadFailCount = 0
+        print("Recarga OK (mag=" .. tostring(cap) .. ")")
+    else
+        reloadFailCount = reloadFailCount + 1
+        if reloadFailCount == 3 then
+            print("AVISO: 3 recargas fallidas. ¿Hay munición en la HOTBAR?")
+        end
+        shotsFired = 0  -- No bloquear el disparo
+    end
+    return success
 end
 
 local function engage(mob)
@@ -286,18 +363,11 @@ local function engage(mob)
     local dx = mob.posX - self.posX
     local dy = mob.posY - self.posY
     local dz = mob.posZ - self.posZ
-    local distSq = dx * dx + dy * dy + dz * dz
+    local distSq = dx*dx + dy*dy + dz*dz
 
-    local weapon = handInfo()
-    local rangeSq
+    tryReload(mob)
 
-    if weapon and isRangedWeapon(weapon) then
-        rangeSq = COMBAT_RANGE_SQ  -- 14 bloques
-    else
-        rangeSq = MELEE_RANGE_SQ   -- 4 bloques
-    end
-
-    if distSq > rangeSq then
+    if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
     elseif distSq < MIN_RANGE_SQ then
         android.moveTo({
@@ -332,7 +402,7 @@ local function tryHeal()
 
     if targetSlot then
         pcall(android.equipSlot, targetSlot)
-        print("Comida/pocion equipada. HP=" .. tostring(self.health))
+        print("Comida/poción equipada. HP=" .. tostring(self.health))
     end
 
     if tempSlot then
@@ -365,21 +435,15 @@ local function collectRoleDrop(drop)
     if not pickedName then return false end
 
     if drop.kind == "weapon" then
-        print("Arma recogida: " .. pickedName .. " (equipada)")
+        print("Arma recogida: " .. pickedName)
         return true
     end
 
     local destination = findAnyEmptySlot()
-    if not destination then
-        print("Sin ranura libre para: " .. pickedName)
-        return false
-    end
+    if not destination then return false end
 
     local stored, err = pcall(android.storeItem, destination)
-    if not stored or apiFailed(err) then
-        print("No se pudo guardar: " .. pickedName)
-        return false
-    end
+    if not stored or apiFailed(err) then return false end
 
     print("Guardado: " .. pickedName .. " → r" .. tostring(destination))
     return true
@@ -414,7 +478,7 @@ local function refuelWithoutDroppingWeapon()
     if heldName then
         tempSlot = findEmptySlot(fuelSlot)
         if not tempSlot then
-            return false, "sin ranura libre para guardar el arma"
+            return false, "sin ranura libre"
         end
         local ok, err = pcall(android.storeItem, tempSlot)
         if not ok or apiFailed(err) then
@@ -433,13 +497,8 @@ local function refuelWithoutDroppingWeapon()
     local after = android.fuelLevel()
 
     local held = handInfo()
-    if held then
-        pcall(android.storeItem, fuelSlot)
-    end
-
-    if tempSlot then
-        pcall(android.equipSlot, tempSlot)
-    end
+    if held then pcall(android.storeItem, fuelSlot) end
+    if tempSlot then pcall(android.equipSlot, tempSlot) end
 
     if not called then return false, tostring(fuelResult) end
     if after > before then return true, "fuel → " .. tostring(after) end
@@ -451,27 +510,20 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v8 ═══")
+    print("═══ Fusilero v9 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
-
-    if weapon then
-        if isMeleeWeapon(weapon) then
-            print("Tipo: MELEE (left click)")
-        elseif isRangedWeapon(weapon) then
-            print("Tipo: ARCO (right click, necesita flechas)")
-        else
-            print("Tipo: NO RECONOCIDO")
-        end
+    if weapon and isWeapon(weapon) then
+        print("→ NTGL activo: left click=disparo, right click=recarga")
+    elseif weapon then
+        print("⚠ No es un arma CGS/CBC reconocida")
     end
-
     print("--- Stash 0-8 ---")
     for index = 0, 8 do
         local name, occupied = slotInfo(index)
         if occupied then
             local label = "r" .. index .. ": " .. tostring(name)
-            if matchesList(name, AMMO_ITEMS) then label = label .. " [AMMO]"
-            elseif isMeleeWeapon(name) then label = label .. " [MELEE]"
-            elseif isRangedWeapon(name) then label = label .. " [RANGED]"
+            if matchesList(name, ALL_AMMO) then label = label .. " [AMMO]"
+            elseif isWeapon(name) then label = label .. " [GUN]"
             elseif name:lower():find("redstone", 1, true) then label = label .. " [FUEL]"
             end
             print(label)
@@ -479,8 +531,6 @@ local function reportLoadout()
             print("r" .. index .. ": [vacia]")
         end
     end
-
-    print("Flechas en stash: " .. (hasAmmo() and "SÍ" or "NO (ponlas en hotbar)"))
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -553,16 +603,12 @@ local function listenForCommands(unit, state, owners)
                 elseif command == "status" then
                     local cur = android.getSelf()
                     local w = handInfo()
-                    local wType = "—"
-                    if w then
-                        if isMeleeWeapon(w) then wType = "melee"
-                        elseif isRangedWeapon(w) then wType = "arco" end
-                    end
                     pcall(android.sendChatMessage,
-                        unitName .. " | v8 | " .. state.mode
+                        unitName .. " | v9 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
-                        .. " | arma=" .. tostring(w or "—") .. " (" .. wType .. ")")
+                        .. " | arma=" .. tostring(w or "—")
+                        .. " | shots=" .. tostring(shotsFired) .. "/" .. tostring(currentMagCap))
                 elseif command == "dump" then
                     local lines = { "MANO: " .. tostring(handInfo() or "vacia") }
                     for i = 0, 8 do
@@ -674,10 +720,11 @@ local function patrol(home, state, unit)
                 if mob then
                     if lastTarget ~= mob.uuid then
                         lastTarget = mob.uuid
-                        lastFireTime = 0
+                        shotsFired = 0
+                        reloadFailCount = 0
                         if os.clock() - lastAlert >= ALERT_DELAY then
                             pcall(android.sendChatMessage,
-                                "ALERTA: " .. mobType .. " → combatiendo.")
+                                "ALERTA: " .. mobType .. " → fuego.")
                             lastAlert = os.clock()
                         end
                     end
@@ -714,7 +761,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v8 detenido.")
+    print("Fusilero v9 detenido.")
 end
 
 local ok, err = pcall(main)
