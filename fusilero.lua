@@ -1,99 +1,86 @@
--- FUSILERO v18.8
--- CC:Androids 1.3.0 / NTGL 3.1.2
--- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
+-- FUSILERO v24 - adaptado a androidscompat + NTGL
+-- CC:Androids 1.3.0 / Create: Gunsmithing
+--
+-- Al arrancar imprime las funciones de "android" disponibles.
+-- No simula clics de disparo desde Lua. androidscompat entrega los objetivos
+-- a NTGL y también controla las armas de los aviones.
+--   !jarvis all hold | patrol | return | status | test
+--
+-- Con androidscompat instalado, el disparo lo hace NTGL en servidor mediante
+-- GunAttackGoal. Este Lua no llama attack/useEntity: ambos son interacciones
+-- distintas del disparo NTGL.
 
-local SCAN_DELAY = 0.8
-local STATUS_REPORT_INTERVAL = 10
-local PATROL_RADIUS = 8
-local REFUEL_AT = 20
-local REFUEL_RETRY_DELAY = 15
-local STASH_SIZE = 9
-local RETREAT_HEALTH = 6
-local ALERT_DELAY = 10
-local ATTACK_TIMEOUT = 45
-local WEAPON_USE_COOLDOWN = 0.8
-local OWNERS_FILE = "owners.cfg"
+local SCAN_DELAY      = 0.8
+local PATROL_RADIUS   = 8
+local REFUEL_AT       = 20
+local REFUEL_RETRY    = 15
+local STASH_SIZE      = 9
+local RETREAT_HEALTH  = 6
+local ALERT_DELAY     = 10
+local FIRE_COOLDOWN   = 1.5   -- segundos entre disparos
+local FIRE_HOLD       = 0.3   -- solo se usa en metodos de interaccion corta
+local ADS_DELAY       = 0.5   -- espera entre pasos de una secuencia (ej: apuntar -> disparar)
+local MAX_RANGE       = 18    -- si el mob esta mas lejos, te acercas
+local STOP_RANGE      = 10    -- te acercas hasta esta distancia
+local OWNERS_FILE     = "owners.cfg"
+local ACCEPT_ANY_HELD = false -- no tratar cualquier objeto como si fuera un arma
 
-local WEAPONS = {
-    "cgs:flintlock","cgs:revolver","cgs:shotgun","cgs:nailgun",
-    "cgs:gatling","cgs:blazegun","cgs:launcher",
-    "cgs:pneumatic_hammer","cgs:frag_grenade",
-    "cbc:ballistic_pistol","cbc:ballistic_carbine",
-    "cbc:ballistic_shotgun","cbc:ballistic_sniper",
-    "cbc:ballistic_gatling","cbc:ballistic_grenade_launcher",
-    "cbc:ballistic_minigun","cbc:ballistic_cannon",
+-- Create: Gunsmithing / NTGL 3.1.2
+-- Se prioriza cualquier arma cuyo ID pertenezca a Create: Gunsmithing.
+local CGS_PREFIX = "cgs:"
+local CGS_WEAPON_IDS = {
+    "cgs:flintlock", "cgs:revolver", "cgs:shotgun", "cgs:nailgun",
+    "cgs:gatling", "cgs:blazegun", "cgs:launcher", "cgs:hammer",
+    "cgs:frag_grenade",
 }
-local WEAPON_NAMES = {
-    "flintlock","revolver","shotgun","nailgun","gatling",
-    "blazegun","launcher","pneumatic hammer","frag grenade",
-    "ballistic pistol","ballistic carbine","ballistic shotgun",
-    "ballistic sniper","ballistic gatling","ballistic minigun",
-    "ballistic grenade launcher","ballistic cannon",
+
+-- attack() en CC:Androids es cuerpo a cuerpo y useEntity() es clic derecho.
+-- Ninguno de los dos dispara un arma NTGL.
+-- Estos nombres se prueban por si alguna versión/parche expone un puente real
+-- de disparo. En CC:Androids 1.3.0 oficial no existe ninguno.
+local FIRE_CANDIDATES = {
+    "shootEntity", "shoot", "ntglShoot", "leftClickEntity", "leftClick",
 }
--- Nombres que puede devolver getSlotInfo cuando el idioma del juego no
--- muestra el ID cgs:item. Se revisan solo después de descartar munición.
-local CGS_WEAPON_ALIASES = {
-    { "cgs:revolver", "revolver", "revólver" },
-    { "cgs:shotgun", "shotgun", "escopeta" },
-    { "cgs:gatling", "gatling" },
-    { "cgs:nailgun", "nailgun", "clavadora" },
-    { "cgs:flintlock", "flintlock", "pistola de chispa", "pistola de pedernal" },
-    { "cgs:blazegun", "blazegun" },
-    { "cgs:launcher", "launcher", "lanzador" },
-    { "cgs:frag_grenade", "frag grenade", "granada de fragmentación", "granada de fragmentacion" },
-    { "cgs:pneumatic_hammer", "pneumatic hammer", "martillo neumático", "martillo neumatico" },
+local TAKES_UUID = {
+    shootEntity = true, ntglShoot = true, leftClickEntity = true,
 }
-local AMMO_IDS = {
-    "cgs:flintlock_bullet","cgs:revolver_round","cgs:shotgun_round",
-    "cgs:nail","cgs:gatling_round","cgs:piercing_revolver_round",
-    "cgs:incendiary_shotgun_round","cgs:paper_cartridge","cgs:paper_shot",
-    "cgs:round_revolver","cgs:round_revolver_piercing","cgs:round_revolver_blank",
-    "cgs:round_shotgun","cgs:round_shotgun_flechette",
-    "cgs:round_shotgun_flechette_steel","cgs:round_shotgun_incendiary",
-    "cgs:round_shotgun_blank","cgs:round_gatling","cgs:round_gatling_piercing",
-    "cgs:round_gatling_blank","cgs:nail_steel","cgs:rocket",
-    "cgs:rocket_small","cgs:spear","cgs:lead_balls",
-    "cgs:shell_gatling","cgs:shell_revolver","cgs:shell_shotgun",
-    "cbc:ballistic_pistol_round","cbc:ballistic_carbine_round",
-    "cbc:ballistic_shotgun_shell","cbc:ballistic_sniper_round",
-    "cbc:ballistic_gatling_round","cbc:ballistic_grenade",
-    "cbc:ballistic_minigun_round","cbc:cannon_shot",
+local FORBIDDEN_FIRE_METHODS = {
+    attack = true, useEntity = true, use = true, useItem = true,
 }
+local ALLOWED_FIRE_METHODS = {}
+for _,n in ipairs(FIRE_CANDIDATES) do ALLOWED_FIRE_METHODS[n]=true end
+
 local TARGETS = {
-    "minecraft:zombie","minecraft:skeleton","minecraft:spider",
-    "minecraft:creeper","minecraft:witch","minecraft:drowned",
-    "minecraft:husk","minecraft:stray","minecraft:phantom",
-    "minecraft:pillager","minecraft:vindicator","minecraft:evoker",
-    "minecraft:ravager","minecraft:cave_spider","minecraft:silverfish",
-    "minecraft:blaze","minecraft:ghast","minecraft:magma_cube",
-    "minecraft:hoglin","minecraft:zoglin","minecraft:wither_skeleton",
-    "minecraft:guardian","minecraft:shulker","minecraft:vex",
-    "minecraft:warden","minecraft:endermite","minecraft:slime",
-    "minecraft:piglin_brute",
-    "alexsmobs:bone_serpent","alexsmobs:crimson_mosquito",
-    "alexsmobs:centipede_head","alexsmobs:mimicube",
-    "alexsmobs:soul_vulture","alexsmobs:guster","alexsmobs:warped_mosco",
-    "alexsmobs:straddler","alexsmobs:dropbear","alexsmobs:void_worm",
-    "alexsmobs:rocky_roller","alexsmobs:skelewag","alexsmobs:farseer",
-    "alexsmobs:skreecher","alexsmobs:murmur",
-    "ars_nouveau:wilden_hunter","ars_nouveau:wilden_stalker",
-    "ars_nouveau:wilden_guardian","ars_nouveau:wilden_boss",
-    "northstar:frozen_zombie","northstar:mars_worm",
-    "northstar:mars_cobra","northstar:mercury_raptor",
-    "northstar:venus_mimic","northstar:venus_scorpion",
-    "quark:forgotten","quark:wraith",
-    "vampirism:vampire","vampirism:ghoul","werewolves:werewolf",
+    "minecraft:zombie","minecraft:skeleton","minecraft:spider","minecraft:creeper",
+    "minecraft:witch","minecraft:drowned","minecraft:husk","minecraft:stray",
+    "minecraft:phantom","minecraft:pillager","minecraft:vindicator","minecraft:evoker",
+    "minecraft:ravager","minecraft:cave_spider","minecraft:silverfish","minecraft:blaze",
+    "minecraft:ghast","minecraft:magma_cube","minecraft:hoglin","minecraft:zoglin",
+    "minecraft:wither_skeleton","minecraft:guardian","minecraft:shulker","minecraft:vex",
+    "minecraft:warden","minecraft:endermite","minecraft:slime","minecraft:piglin_brute",
 }
 
+local WEAPON_ORDER = {
+    "revolver","shotgun","gatling","nailgun","flintlock","blazegun",
+    "launcher","frag_grenade","pneumatic_hammer",
+}
+local AMMO_WORDS = { "round","bullet","cartridge","shell","nail_","rocket","spear","lead_balls","paper_shot" }
+
+local fireMethod = nil
+local lastFire = 0
 local lastTarget = nil
 local inCombat = false
-local lastCombatEnd = 0
-local attackStart = 0
-local lastAttackError = 0
-local lastWeaponUse = 0
 
-local function fail(v)
-    return type(v)=="table" and v[1]==true
+-- ---------------------------------------------------------------- utilidades
+local function fail(v) return type(v)=="table" and v[1]==true end
+
+local function hasFn(name) return type(android[name])=="function" end
+
+local function pickFireMethod()
+    for _,n in ipairs(FIRE_CANDIDATES) do
+        if hasFn(n) then return n end
+    end
+    return nil
 end
 
 local function hand()
@@ -105,35 +92,48 @@ local function hand()
 end
 
 local function isAmmo(n)
-    if type(n)~="string" then return false end
-    local l=n:lower()
-    for _,i in ipairs(AMMO_IDS) do
-        if l:find(i,1,true) then return true end
+    local l=tostring(n):lower()
+    for _,w in ipairs(AMMO_WORDS) do
+        if l:find(w,1,true) then return true end
     end
-    if l:find("round",1,true) then return true end
-    if l:find("bullet",1,true) then return true end
-    if l:find("cartridge",1,true) then return true end
-    if l:find("shell",1,true) then return true end
-    if l:find("nail",1,true) and not l:find("nailgun",1,true) then return true end
     return false
 end
 
-local function isWep(n)
-    if type(n)~="string" then return false end
-    if isAmmo(n) then return false end
+-- nombres visibles (getHandInfo puede devolver "Revolver" y no "cgs:revolver")
+local ALIASES = {
+    {"revolver","revólver","revolver"},
+    {"shotgun","escopeta"},
+    {"gatling"},
+    {"nailgun","clavadora"},
+    {"flintlock","pistola de chispa","pedernal"},
+    {"blazegun"},
+    {"launcher","lanzador"},
+    {"frag_grenade","frag grenade","granada"},
+    {"pneumatic","hammer","martillo"},
+}
+
+-- devuelve rango (1 = mejor) si es un arma CGS, o nil
+local function weaponRank(n)
+    if type(n)~="string" or isAmmo(n) then return nil end
     local l=n:lower()
-    -- Permite armas nuevas de CGS/NTGL aunque todavía no estén en la lista.
-    if l:find("cgs:",1,true) or l:find("cbc:",1,true) then return true end
-    for _,i in ipairs(WEAPONS) do
-        if l:find(i,1,true) then return true end
-    end
-    for _,i in ipairs(WEAPON_NAMES) do
-        if l:find(i,1,true) then return true end
-    end
-    for _,aliases in ipairs(CGS_WEAPON_ALIASES) do
-        for j=2,#aliases do
-            if l:find(aliases[j],1,true) then return true end
+    for rank,al in ipairs(ALIASES) do
+        for _,a in ipairs(al) do
+            if l:find(a,1,true) then return rank end
         end
+    end
+    return nil
+end
+
+local function hasItemId(n, id)
+    if type(n)~="string" then return false end
+    return n:lower():find(id:lower(),1,true)~=nil
+end
+
+local function isCgsWeaponName(n)
+    if type(n)~="string" or isAmmo(n) then return false end
+    if not hasItemId(n,CGS_PREFIX) then return false end
+    for _,id in ipairs(CGS_WEAPON_IDS) do
+        if hasItemId(n,id) then return true end
     end
     return false
 end
@@ -141,282 +141,258 @@ end
 local function isFuel(n)
     if type(n)~="string" then return false end
     local l=n:lower()
-    if l:find("redstone torch",1,true) then return false end
-    if l:find("redstone_torch",1,true) then return false end
+    if l:find("redstone_torch",1,true) or l:find("redstone torch",1,true) then return false end
     return l:find("redstone",1,true)~=nil
 end
 
-local function emptyName(name)
-    if type(name)~="string" then return name==false or name==nil end
-    local lower=name:lower()
-    return lower=="" or lower=="empty" or lower=="minecraft:air" or lower=="air" or lower=="a"
+-- lo que lleva en la mano cuenta como arma si lo reconocemos,
+-- o (ACCEPT_ANY_HELD) si no es munición ni combustible
+local function isHeldWeapon(h)
+    if not h then return false end
+    if weaponRank(h) then return true end
+    return ACCEPT_ANY_HELD and not isAmmo(h) and not isFuel(h)
 end
 
--- Lee las nueve ranuras que expone CC:Androids. Solo devuelve nombres y
--- estados; equipar, guardar y restaurar ocurren en las funciones de acción.
+local function isEmpty(n)
+    if type(n)~="string" then return true end
+    local l=n:lower()
+    return l=="" or l=="empty" or l=="air" or l=="minecraft:air"
+end
+
 local function scanInventory()
-    local inventory={}
+    local inv={}
     for i=0,STASH_SIZE-1 do
         local ok,name,extra=pcall(android.getSlotInfo,i)
         if ok then
-            if type(name)=="table" then
-                name=name.name or name.id or name.item
-            elseif type(name)=="boolean" and type(extra)=="string" then
-                name=extra
-            end
-            inventory[#inventory+1]={slot=i,name=name,empty=emptyName(name)}
+            if type(name)=="table" then name=name.name or name.id or name.item
+            elseif type(name)=="boolean" and type(extra)=="string" then name=extra end
+            inv[#inv+1]={slot=i,name=name,empty=isEmpty(name)}
         end
     end
-    return inventory
+    return inv
 end
 
-local function inventorySummary(inventory)
-    local bySlot={}
-    for _,item in ipairs(inventory) do
-        bySlot[item.slot]=item.empty and "-" or tostring(item.name)
-    end
-    local slots={}
-    for i=0,STASH_SIZE-1 do
-        slots[#slots+1]="r"..i.."="..tostring(bySlot[i] or "?")
-    end
-    return table.concat(slots," | ")
+local function invSummary(inv)
+    local by={}
+    for _,it in ipairs(inv) do by[it.slot]=it.empty and "-" or tostring(it.name) end
+    local out={}
+    for i=0,STASH_SIZE-1 do out[#out+1]="r"..i.."="..tostring(by[i] or "?") end
+    return table.concat(out," | ")
 end
 
--- Busca espacio libre consultando el inventario actual, sin ranuras asignadas.
-local function findFreeSlot(exclude)
-    for _,item in ipairs(scanInventory()) do
-        if item.slot~=exclude and item.empty then return item.slot end
+local function findFree(exclude)
+    for _,it in ipairs(scanInventory()) do
+        if it.slot~=exclude and it.empty then return it.slot end
     end
-    return nil
 end
 
--- Busca redstone en cualquier ranura del inventario actual.
-local function findFuelSlot()
-    local found={}
-    for _,item in ipairs(scanInventory()) do
-        if isFuel(item.name) then return item.slot end
-        found[#found+1]="r"..item.slot.."="..tostring(item.name)
+local function findFuel()
+    for _,it in ipairs(scanInventory()) do
+        if isFuel(it.name) then return it.slot end
     end
-    return nil,table.concat(found,", ")
 end
 
-local function cgsWeaponRank(name)
-    if type(name)~="string" or isAmmo(name) then return nil end
-    local lower=name:lower()
-    for rank,aliases in ipairs(CGS_WEAPON_ALIASES) do
-        for _,alias in ipairs(aliases) do
-            if lower:find(alias,1,true) then return rank end
+local function findWeapon()
+    local inv=scanInventory()
+
+    -- Primero cualquier arma CGS identificada por su namespace cgs:.
+    -- Entre ellas se mantiene el orden: revolver, shotgun, gatling, etc.
+    local cgsSlot,cgsRank
+    for _,it in ipairs(inv) do
+        if isCgsWeaponName(it.name) then
+            local r=weaponRank(it.name) or 99
+            if not cgsRank or r<cgsRank then cgsSlot,cgsRank=it.slot,r end
         end
     end
-    return nil
-end
+    if cgsSlot then return cgsSlot end
 
--- Elige un arma CGS del inventario; la preferencia es estable y no depende
--- de que esté colocada en una ranura concreta.
-local function findWeaponSlot()
-    local bestSlot, bestRank
-    for _,item in ipairs(scanInventory()) do
-        local rank=cgsWeaponRank(item.name)
-        if rank then
-            if not bestRank or rank<bestRank then
-                bestSlot,bestRank=item.slot,rank
-            end
-        end
+    -- Fallback para nombres visibles/localizados que no contienen cgs:.
+    local bs,br
+    for _,it in ipairs(inv) do
+        local r=weaponRank(it.name)
+        if r and (not br or r<br) then bs,br=it.slot,r end
     end
-    return bestSlot
+    return bs
 end
 
--- Equipa un arma CGS disponible sin reservar una ranura fija.
+-- ---------------------------------------------------------------- equipar
 local function equipWeapon()
-    local h = hand()
-    local weaponSlot = findWeaponSlot()
-    if h and isWep(h) and cgsWeaponRank(h)==nil and weaponSlot==nil then
-        return true
-    end
-    if h and cgsWeaponRank(h) then return true end
-    if weaponSlot == nil then return false end
+    local h=hand()
+    if isHeldWeapon(h) then return true end
+    local ws=findWeapon()
+    if not ws then return false end
 
-    local tmp = nil
+    local tmp
     if h then
-        tmp = findFreeSlot(weaponSlot)
+        tmp=findFree(ws)
         if not tmp then return false end
-        local ok,r = pcall(android.storeItem,tmp)
+        local ok,r=pcall(android.storeItem,tmp)
         if not ok or fail(r) then return false end
     end
-
-    local ok,r = pcall(android.equipSlot,weaponSlot)
+    local ok,r=pcall(android.equipSlot,ws)
     if not ok or fail(r) then
         if tmp then pcall(android.equipSlot,tmp) end
         return false
     end
-
-    local nw = hand()
-    if nw and isWep(nw) then
-        print("Arma: "..nw)
-        return true
-    end
-
-    if nw then pcall(android.storeItem,weaponSlot) end
+    local nw=hand()
+    if isHeldWeapon(nw) then print("Arma: "..nw) return true end
+    if nw then pcall(android.storeItem,ws) end
     if tmp then pcall(android.equipSlot,tmp) end
     return false
 end
 
--- Refuel desde FUEL_SLOT (solo cuando fuel bajo y sin combate)
 local function doRefuel()
-    -- El repostaje se ejecuta desde el bucle idle. No lo bloqueamos solo
-    -- porque haya un enemigo cerca: con poco combustible el androide debe
-    -- poder repostar y después reanudar el combate.
-
-    local heldName = hand()
-    local fuelInHand = heldName and isFuel(heldName)
-    local fuelSlot, inventoryInfo
-    if not fuelInHand then fuelSlot, inventoryInfo = findFuelSlot() end
-    if not fuelInHand and fuelSlot == nil then
-        print("Refuel: sin redstone; inventario: "..tostring(inventoryInfo))
-        return
+    local held=hand()
+    local inHand=held and isFuel(held)
+    local fs_
+    if not inHand then
+        fs_=findFuel()
+        if not fs_ then print("Refuel: sin redstone") return end
     end
-
-    local tmp = nil
-    if not fuelInHand and heldName then
-        tmp = findFreeSlot(fuelSlot)
+    local tmp
+    if not inHand and held then
+        tmp=findFree(fs_)
         if not tmp then return end
-        local ok,r = pcall(android.storeItem,tmp)
+        local ok,r=pcall(android.storeItem,tmp)
         if not ok or fail(r) then return end
     end
-
-    if not fuelInHand then
-        local ok,r = pcall(android.equipSlot,fuelSlot)
+    if not inHand then
+        local ok,r=pcall(android.equipSlot,fs_)
         if not ok or fail(r) then
             if tmp then pcall(android.equipSlot,tmp) end
             return
         end
-
-        local n = hand()
+        local n=hand()
         if not n or not isFuel(n) then
-            if n then pcall(android.storeItem,fuelSlot) end
+            if n then pcall(android.storeItem,fs_) end
             if tmp then pcall(android.equipSlot,tmp) end
-            print("Refuel: no se pudo equipar redstone de r"..fuelSlot)
             return
         end
     end
-
-    local before = android.fuelLevel()
-    local called,refuelResult=pcall(android.refuel,1)
-    local after = android.fuelLevel()
-
-    local rem = hand()
-    if not fuelInHand and rem then pcall(android.storeItem,fuelSlot) end
+    local before=android.fuelLevel()
+    pcall(android.refuel,1)
+    local after=android.fuelLevel()
+    if not inHand and hand() then pcall(android.storeItem,fs_) end
     if tmp then pcall(android.equipSlot,tmp) end
+    print("Fuel: "..tostring(before).." -> "..tostring(after))
+end
 
-    if after > before then
-        print("Fuel -> "..tostring(after))
-    elseif not called then
-        print("Refuel: error API -> "..tostring(refuelResult))
-    else
-        print("Refuel: no aumento de combustible")
-    end
+-- ---------------------------------------------------------------- mobs
+local function dist(s,m)
+    local dx,dy,dz=m.posX-s.posX,m.posY-s.posY,m.posZ-s.posZ
+    return math.sqrt(dx*dx+dy*dy+dz*dz)
 end
 
 local function findMob()
-    local s = android.getSelf()
-    local best, bestType, bestD
-
-    -- Algunas versiones de CC:Androids devuelven mejor la lista completa
-    -- que getClosestMob(tipo). Primero revisamos los mobs cercanos y usamos
-    -- el tipo/ID que exponga la tabla.
-    local nearbyOk, nearby = pcall(android.getNearbyMobs)
-    if nearbyOk and type(nearby)=="table" then
-        for _,m in pairs(nearby) do
+    local s=android.getSelf()
+    local best,bestType,bestD
+    local ok,near=pcall(android.getNearbyMobs)
+    if ok and type(near)=="table" then
+        for _,m in pairs(near) do
             if type(m)=="table" and m.uuid and m.posX and m.posY and m.posZ then
-                local label=tostring(m.type or m.entityType or m.name or ""):lower()
-                local matchedType
+                local label=tostring(m.name or m.type or ""):lower()
                 for _,t in ipairs(TARGETS) do
                     local short=t:gsub("^[^:]+:","")
                     if label:find(t,1,true) or label:find(short,1,true) then
-                        matchedType=t
+                        local d=dist(s,m)
+                        if not bestD or d<bestD then best,bestType,bestD=m,t,d end
                         break
                     end
                 end
-                if matchedType then
-                    local dx=m.posX-s.posX
-                    local dy=m.posY-s.posY
-                    local dz=m.posZ-s.posZ
-                    local d=dx*dx+dy*dy+dz*dz
-                    if not bestD or d<bestD then
-                        best,bestType,bestD=m,matchedType,d
-                    end
-                end
             end
         end
     end
-
-    if best then return best,bestType end
-
-    -- Respaldo para versiones que no implementen getNearbyMobs().
-    for _,t in ipairs(TARGETS) do
-        local ok,m = pcall(android.getClosestMob,t)
-        if ok and type(m)=="table" and m.uuid
-            and m.posX and m.posY and m.posZ then
-            local dx=m.posX-s.posX
-            local dy=m.posY-s.posY
-            local dz=m.posZ-s.posZ
-            local d=dx*dx+dy*dy+dz*dz
-            if not bestD or d<bestD then
-                best,bestType,bestD = m,t,d
-            end
-        end
-    end
-    return best, bestType
+    return best,bestType
 end
 
-local function combat(mob)
-    if not mob or not mob.uuid then return false end
-    local w = hand()
-    if not w or not isWep(w) or (cgsWeaponRank(w)==nil and findWeaponSlot()~=nil) then
-        if not equipWeapon() then
-            if os.clock()-lastAttackError>=5 then
-                print("No ataco: no pude equipar un arma CGS")
-                lastAttackError=os.clock()
+-- ---------------------------------------------------------------- disparo
+local function fireOnce(mob)
+    -- Disparo delegado a androidscompat + NTGL. No simular clics desde Lua.
+    return true,"delegado a androidscompat/NTGL"
+    -- Código antiguo conservado debajo como referencia; queda inalcanzable.
+    -- El addon androidscompat deja que NTGL gestione el disparo, la munición
+    -- y la recarga desde su GunAttackGoal. No hay que simular un clic aquí.
+    if not fireMethod then return true,"delegado a androidscompat/NTGL" end
+    -- fireMethod puede ser una secuencia de interacciones, pero nunca melee.
+    local steps={}
+    for p in fireMethod:gmatch("[^+]+") do steps[#steps+1]=p end
+    for i,step in ipairs(steps) do
+        local ok,r=true,nil
+        if FORBIDDEN_FIRE_METHODS[step] then
+            return false,"metodo bloqueado: no dispara NTGL"
+        elseif step~="cancel" and not ALLOWED_FIRE_METHODS[step] then
+            return false,"metodo no es un puente NTGL: "..tostring(step)
+        end
+        if step=="cancel" then
+            pcall(android.cancelTask)
+            sleep(0.2)
+        else
+            local fn=android[step]
+            if TAKES_UUID[step] then ok,r=pcall(fn,mob.uuid) else ok,r=pcall(fn) end
+            if not ok or fail(r) then
+                pcall(android.cancelTask)
+                return false,(type(r)=="table" and r[2]) or r
             end
-            return false
+            sleep(i<#steps and ADS_DELAY or FIRE_HOLD)
         end
     end
-
-    w=hand()
-    if not w or not isWep(w) then
-        if os.clock()-lastAttackError>=5 then
-            print("No ataco: objeto en mano no reconocido como arma CGS: "..tostring(w or "vacio"))
-            lastAttackError=os.clock()
-        end
-        return false
-    end
-
-    -- CGS/NTGL usa la interacción de la entidad para disparar y recargar.
-    -- useEntity mueve al androide hasta el objetivo y usa el arma equipada.
-    local now=os.clock()
-    if now-lastWeaponUse<WEAPON_USE_COOLDOWN then return true end
-    lastWeaponUse=now
-    attackStart=now
-    local ok,result=pcall(android.useEntity,mob.uuid)
-    if not ok or fail(result) then
-        if os.clock()-lastAttackError>=5 then
-            local detail=type(result)=="table" and result[2] or result
-            print("Disparo/recarga NTGL fallido: "..tostring(detail or "error API"))
-            lastAttackError=os.clock()
-        end
-        return false
-    end
+    pcall(android.cancelTask) -- evita que el androide camine hacia el mob
     return true
 end
 
+local lastErr=0
+local function combat(mob)
+    if not equipWeapon() then
+        if os.clock()-lastErr>5 then
+            print("Solo disparo: no hay arma CGS equipable. Mano="..tostring(hand() or "VACIA"))
+            lastErr=os.clock()
+        end
+        return false
+    end
+    -- AndroidsCompatMod mantiene el objetivo y GunAttackGoal se encarga de
+    -- acercarse, apuntar, disparar, recargar y controlar armas del avión.
+    return true
+
+    local now=os.clock()
+    if now-lastFire<FIRE_COOLDOWN then return true end
+
+    local s=android.getSelf()
+    local d=dist(s,mob)
+    if d>MAX_RANGE then
+        -- acercarse hasta STOP_RANGE
+        local f=(d-STOP_RANGE)/d
+        pcall(android.moveTo,{
+            x=s.posX+(mob.posX-s.posX)*f,
+            y=s.posY+(mob.posY-s.posY)*f,
+            z=s.posZ+(mob.posZ-s.posZ)*f })
+        return true
+    end
+
+    -- intentar mirar al mob si la API lo ofrece
+    for _,n in ipairs({"lookAt","faceEntity","face"}) do
+        if hasFn(n) then
+            if not pcall(android[n],mob.uuid) then
+                pcall(android[n],{x=mob.posX,y=mob.posY+1,z=mob.posZ})
+            end
+            break
+        end
+    end
+
+    lastFire=now
+    local ok,err=fireOnce(mob)
+    if not ok and os.clock()-lastErr>5 then
+        print("Disparo fallido ("..tostring(fireMethod).."): "..tostring(err))
+        lastErr=os.clock()
+    end
+    return ok
+end
+
+-- ---------------------------------------------------------------- owners / chat
 local function parseOwners(input)
     local o,names={},{}
     for p in tostring(input):gmatch("[^,\n]+") do
         local n=p:match("^%s*(.-)%s*$")
-        if n~="" and not o[n:lower()] then
-            o[n:lower()]=true
-            names[#names+1]=n
-        end
+        if n~="" and not o[n:lower()] then o[n:lower()]=true names[#names+1]=n end
     end
     return o,names
 end
@@ -425,21 +401,16 @@ local function loadOwners()
     if fs.exists(OWNERS_FILE) then
         local f=fs.open(OWNERS_FILE,"r")
         if not f then return nil end
-        local o,n=parseOwners(f.readAll())
-        f.close()
+        local o,n=parseOwners(f.readAll()) f.close()
         if #n==0 then return nil end
         return o
     end
     print("Jugadores (comas):")
     local o,n=parseOwners(read())
-    while #n==0 do
-        print("Escribe un nombre:")
-        o,n=parseOwners(read())
-    end
+    while #n==0 do print("Escribe un nombre:") o,n=parseOwners(read()) end
     local f=fs.open(OWNERS_FILE,"w")
     if not f then return nil end
-    f.write(table.concat(n,"\n").."\n")
-    f.close()
+    f.write(table.concat(n,"\n").."\n") f.close()
     return o
 end
 
@@ -455,73 +426,77 @@ local function listen(unit,state,owners)
     while true do
         local _,d=os.pullEvent("onChatMessage")
         if type(d)=="table" and owners[tostring(d.senderName or ""):lower()] then
-            local t,c=tostring(d.message or ""):match("^!jarvis%s+(.+)%s+(%S+)$")
-            if t and c and (t:lower()=="all" or t:lower()==un:lower()) then
+            local t,c,arg=tostring(d.message or ""):match("^!jarvis%s+(%S+)%s+(%S+)%s*(%S*)$")
+            if t and (t:lower()=="all" or t:lower()==un:lower()) then
                 c=c:lower()
-                if c=="hold" then
-                    state.mode="hold"
-                    android.cancelTask()
-                elseif c=="resume" or c=="patrol" then
-                    state.mode="patrol"
-                elseif c=="return" then
-                    state.mode="return"
-                    android.cancelTask()
+                if c=="hold" then state.mode="hold" pcall(android.cancelTask)
+                elseif c=="resume" or c=="patrol" then state.mode="patrol"
+                elseif c=="return" then state.mode="return" pcall(android.cancelTask)
+                elseif c=="fire" and arg~="" then
+                    local valid=true
+                    for p in arg:gmatch("[^+]+") do
+                        if FORBIDDEN_FIRE_METHODS[p]
+                            or (p~="cancel" and not ALLOWED_FIRE_METHODS[p])
+                            or (p~="cancel" and not hasFn(p)) then
+                            valid=false
+                        end
+                    end
+                    if valid then
+                        fireMethod=nil
+                        print("Ignorado: el disparo lo controla androidscompat/NTGL")
+                        pcall(android.sendChatMessage,"disparo=androidscompat/NTGL")
+                    else
+                        pcall(android.sendChatMessage,"Metodo bloqueado o inexistente: "..arg)
+                    end
+                elseif c=="test" then
+                    state.testShot=true
                 elseif c=="status" then
                     local s=android.getSelf()
-                    local w=hand()
-                    local inv=tostring(state.inventoryStatus or "-")
-                    if #inv>120 then inv=inv:sub(1,117).."..." end
                     pcall(android.sendChatMessage,un.."|"..state.mode
                         .."|HP="..tostring(s.health)
                         .."|fuel="..tostring(android.fuelLevel())
-                        .."|wep="..tostring(w or "-")
-                        .."|combat="..tostring(inCombat)
-                        .."|inv="..inv)
+                        .."|wep="..tostring(hand() or "-")
+                        .."|fire="..tostring(fireMethod))
                 end
             end
         end
     end
 end
 
+-- ---------------------------------------------------------------- main
 local function main()
-    local s = android.getSelf()
-    local home = {x=s.posX,y=s.posY,z=s.posZ}
-    local state = {mode="patrol"}
-    local owners = loadOwners()
-    if not owners then
-        print("Sin owners.")
-        return
+    local s=android.getSelf()
+    local home={x=s.posX,y=s.posY,z=s.posZ}
+    local state={mode="patrol"}
+    local owners=loadOwners()
+    if not owners then print("Sin owners.") return end
+
+    -- diagnostico: que puede hacer este androide
+    local fns={}
+    for k,v in pairs(android) do if type(v)=="function" then fns[#fns+1]=k end end
+    table.sort(fns)
+    print("android.* = "..table.concat(fns,", "))
+
+    fireMethod=pickFireMethod()
+    if fireMethod then
+        print("Metodo NTGL: "..fireMethod)
+    else
+        print("Disparo: delegado a androidscompat -> NTGL GunAttackGoal")
+        print("No uso attack/useEntity: ambos estan bloqueados")
     end
-
-    local initialInventory=scanInventory()
-    state.inventoryStatus=inventorySummary(initialInventory)
-    print("=== v18.8 ===")
+    print("Modo: solo disparo | armas CGS reconocidas: "..tostring(#CGS_WEAPON_IDS))
+    print("Cambiar: !jarvis all fire <metodo NTGL> | test = prueba el disparo")
+    print("Inventario: "..invSummary(scanInventory()))
     print("Pulsa Q para detener")
-    print("FUEL_SLOT=dinámico")
-    print("Arma: selección automática CGS")
-    print("Mano: "..tostring(hand() or "VACIA"))
-    print("Inventario: "..state.inventoryStatus)
-    print("Estado: HP="..tostring(s.health)
-        .." | fuel="..tostring(android.fuelLevel())
-        .." | tarea="..tostring(android.currentTask())
-        .." | modo="..state.mode)
-    print("===========")
-
     equipWeapon()
 
-    local points = {
+    local points={
         {x=home.x+PATROL_RADIUS,y=home.y,z=home.z},
         {x=home.x,y=home.y,z=home.z+PATROL_RADIUS},
         {x=home.x-PATROL_RADIUS,y=home.y,z=home.z},
         {x=home.x,y=home.y,z=home.z-PATROL_RADIUS},
     }
-    local np=1
-    local lastRefuel=0
-    local lastAlert=0
-    local lastWep=0
-    local lastInventorySignature=state.inventoryStatus
-    local lastStatusSignature=nil
-    local lastStatusReport=0
+    local np,lastRefuel,lastAlert=1,0,0
 
     parallel.waitForAny(
         function()
@@ -529,44 +504,9 @@ local function main()
                 local self=android.getSelf()
                 local task=android.currentTask()
                 local now=os.clock()
-                local inventory=scanInventory()
-                state.inventoryStatus=inventorySummary(inventory)
-                local held,heldCount=hand()
-                local fuelNow=android.fuelLevel()
-                local hpNow=self and self.health or "?"
-                if state.inventoryStatus~=lastInventorySignature then
-                    print("Inventario: "..state.inventoryStatus)
-                    lastInventorySignature=state.inventoryStatus
-                end
-                local signature=table.concat({
-                    tostring(hpNow),tostring(task),state.mode,
-                    tostring(held or "-"),tostring(heldCount),tostring(inCombat),
-                },"|")
-                if signature~=lastStatusSignature or now-lastStatusReport>=STATUS_REPORT_INTERVAL then
-                    print("Scan | HP="..tostring(hpNow)
-                        .." | fuel="..tostring(fuelNow)
-                        .." | tarea="..tostring(task)
-                        .." | modo="..state.mode
-                        .." | mano="..tostring(held or "VACIA")
-                        .." x"..tostring(heldCount)
-                        .." | combate="..tostring(inCombat))
-                    lastStatusSignature=signature
-                    lastStatusReport=now
-                end
-
-                if (task=="attacking" or task=="usingEntity"
-                    or task=="movingToEntity" or task=="movintToEntity") and lastTarget then
-                    if now-attackStart>ATTACK_TIMEOUT then
-                        android.cancelTask()
-                        task="idle"
-                        lastTarget=nil
-                        inCombat=false
-                        lastCombatEnd=now
-                    end
-                end
 
                 if self.health and self.health<=RETREAT_HEALTH and task~="idle" then
-                    android.cancelTask()
+                    pcall(android.cancelTask)
                     task="idle"
                     if now-lastAlert>=ALERT_DELAY then
                         pcall(android.sendChatMessage,"HP bajo. Replegando.")
@@ -577,66 +517,59 @@ local function main()
                 if task~="idle" then
                     sleep(SCAN_DELAY)
                 else
+                    local mob,mobType=findMob()
+                    inCombat=(mob~=nil)
 
-                local mob,mobType=findMob()
-                local wasC=inCombat
-                inCombat=(mob~=nil)
-                if wasC and not inCombat then
-                    lastCombatEnd=now
-                end
-
-                if not inCombat and now-lastWep>=15 then
-                    local w=hand()
-                    if not w or not isWep(w) or (cgsWeaponRank(w)==nil and findWeaponSlot()~=nil) then
-                        equipWeapon()
+                    local fuel=android.fuelLevel()
+                    if fuel<REFUEL_AT and now-lastRefuel>=REFUEL_RETRY then
+                        doRefuel() lastRefuel=now fuel=android.fuelLevel()
                     end
-                    lastWep=now
-                end
 
-                local fuel=android.fuelLevel()
-                if fuel<REFUEL_AT
-                    and now-lastRefuel>=REFUEL_RETRY_DELAY
-                    then
-                    doRefuel()
-                    lastRefuel=now
-                    fuel=android.fuelLevel()
-                end
-
-                if fuel<1 then
-                    sleep(SCAN_DELAY)
-                elseif state.mode=="return"
-                    or (self.health and self.health<=RETREAT_HEALTH) then
-                    lastTarget=nil
-                    android.moveTo(home)
-                elseif state.mode=="patrol" then
-                    if mob then
-                        if lastTarget~=mob.uuid then
-                            lastTarget=mob.uuid
-                            attackStart=now
-                            if now-lastAlert>=ALERT_DELAY then
-                                pcall(android.sendChatMessage,"ALERTA: "..mobType)
-                                lastAlert=now
+                    if state.testShot then
+                        state.testShot=false
+                        if mob then
+                            if equipWeapon() then
+                                if fireMethod then
+                                    local ok,err=fireOnce(mob)
+                                    print("TEST "..tostring(fireMethod)..": "..tostring(ok)..(ok and "" or (" "..tostring(err))))
+                                else
+                                    print("TEST: delegado a androidscompat/NTGL")
+                                end
+                            else
+                                print("TEST: no hay arma CGS; no hago melee")
                             end
+                        else
+                            print("TEST: no hay mob cerca")
                         end
-                        combat(mob)
-                    else
+                    elseif fuel<1 then
+                        -- sin combustible
+                    elseif state.mode=="return" or (self.health and self.health<=RETREAT_HEALTH) then
                         lastTarget=nil
-                        android.moveTo(points[np])
-                        np=np%#points+1
+                        pcall(android.moveTo,home)
+                    elseif state.mode=="patrol" then
+                        if mob then
+                            if lastTarget~=mob.uuid then
+                                lastTarget=mob.uuid
+                                if now-lastAlert>=ALERT_DELAY then
+                                    pcall(android.sendChatMessage,"ALERTA: "..tostring(mobType))
+                                    lastAlert=now
+                                end
+                            end
+                            combat(mob)
+                        else
+                            lastTarget=nil
+                            pcall(android.moveTo,points[np])
+                            np=np%#points+1
+                        end
                     end
-                elseif state.mode=="hold" then
-                    lastTarget=nil
-                end
                 end
                 sleep(SCAN_DELAY)
             end
         end,
         waitStop,
-        function()
-            listen(s,state,owners)
-        end
+        function() listen(s,state,owners) end
     )
-    android.cancelTask()
+    pcall(android.cancelTask)
     print("Detenido.")
 end
 
@@ -644,4 +577,4 @@ local ok,err=pcall(main)
 if not ok then
     pcall(android.cancelTask)
     print("Error: "..tostring(err))
-end   
+end
