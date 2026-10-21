@@ -1,8 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v11 (CC:Androids 1.3.0 / Forge 1.20.1)
--- NTGL 3.1.2: left click=disparo, right click=recarga
--- Stash: 11 ranuras (0-10). getSlotInfo NO devuelve nombres.
--- Fuel/Armas: escaneo dinámico (equipSlot + getHandInfo).
+-- ROL FUSILERO v12 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- NTGL 3.1.2:
+--   Left click (attack)  = disparar + auto-recarga
+--   Right click (useEnt) = apuntar (ADS)
+-- No se usa right click para recargar.
+-- Stash: 11 ranuras (0-10). Escaneo dinámico.
 -- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
@@ -10,7 +12,8 @@
 local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 6
 local REFUEL_AT = 20
-local REFUEL_RETRY_DELAY = 5
+local REFUEL_RETRY_DELAY = 15
+local REFUEL_SAFE_RADIUS_SQ = 20*20
 local STASH_SIZE = 11
 local PICKUP_SCAN_DELAY = 0.8
 local HEAL_AT = 12
@@ -25,7 +28,8 @@ local OWNERS_FILE = "owners.cfg"
 local COMBAT_RANGE_SQ = 14 * 14
 local MIN_RANGE_SQ = 4 * 4
 local FIRE_COOLDOWN = 0.5
-local RELOAD_COOLDOWN = 3
+local AIM_BEFORE_SHOT = true    -- Apuntar (right click) antes de disparar
+local AIM_DELAY = 0.3           -- Pausa tras apuntar antes de disparar
 
 local MAG_CAPACITY = {
     ["cgs:flintlock"] = 1,
@@ -153,17 +157,17 @@ local TARGET_TYPES = {
 -- ESTADO
 -- ═══════════════════════════════════════════════════════════════
 local lastFireTime = 0
-local lastReloadTime = 0
 local shotsFired = 0
 local currentMagCap = 8
 local lastTarget = nil
 local roleDropIndex = 1
-local reloadFailCount = 0
-local cachedFuelSlot = nil      -- Cache: ranura con redstone
-local cachedWeaponSlot = nil    -- Cache: ranura con arma
+local cachedFuelSlot = nil
+local cachedWeaponSlot = nil
 local lastFuelScan = 0
 local lastWeaponScan = 0
-local SCAN_CACHE_TIME = 10      -- Rescanear cada 10s
+local SCAN_CACHE_TIME = 10
+local inCombat = false
+local lastCombatEnd = 0
 
 -- ═══════════════════════════════════════════════════════════════
 -- UTILIDADES
@@ -207,8 +211,7 @@ end
 
 local function isRedstone(name)
     if type(name) ~= "string" then return false end
-    local lower = name:lower()
-    return lower:find("redstone", 1, true) ~= nil
+    return name:lower():find("redstone", 1, true) ~= nil
 end
 
 local function findEmptySlot(exclude)
@@ -245,12 +248,8 @@ local function getMagCapacity()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- ESCANEO DINÁMICO DE STASH
--- (equipSlot + getHandInfo porque getSlotInfo no da nombres)
+-- ESCANEO DINÁMICO
 -- ═══════════════════════════════════════════════════════════════
-
--- Escanea la stash buscando redstone. Devuelve índice o nil.
--- Solo se ejecuta si la cache está vencida.
 local function findRedstoneSlot()
     local now = os.clock()
     if cachedFuelSlot and (now - lastFuelScan) < SCAN_CACHE_TIME then
@@ -279,13 +278,11 @@ local function findRedstoneSlot()
                     found = index
                     break
                 end
-                -- No es redstone, devolver a su ranura
                 pcall(android.storeItem, index)
             end
         end
     end
 
-    -- Restaurar lo que había en la mano
     if tempSlot then
         local held = handInfo()
         if not held then
@@ -304,7 +301,6 @@ local function findRedstoneSlot()
     return found
 end
 
--- Escanea la stash buscando un arma CGS/CBC. Devuelve índice o nil.
 local function findWeaponSlot()
     local now = os.clock()
     if cachedWeaponSlot and (now - lastWeaponScan) < SCAN_CACHE_TIME then
@@ -356,20 +352,16 @@ local function findWeaponSlot()
     return found
 end
 
--- Asegura que hay un arma en la mano. Si no, la equipa desde la stash.
 local function ensureWeapon()
     local held = handInfo()
     if held and isWeapon(held) then return true end
 
     local weaponSlot = findWeaponSlot()
     if not weaponSlot then
-        if held then
-            print("Sin arma CGS/CBC en stash ni en mano.")
-        end
+        if held then print("Sin arma CGS/CBC disponible.") end
         return false
     end
 
-    -- Guardar lo que hay en mano
     local tempSlot
     if held then
         tempSlot = findEmptySlot(weaponSlot)
@@ -377,7 +369,6 @@ local function ensureWeapon()
         pcall(android.storeItem, tempSlot)
     end
 
-    -- Equipar el arma
     local ok, result = pcall(android.equipSlot, weaponSlot)
     if not ok or apiFailed(result) then
         if tempSlot then pcall(android.equipSlot, tempSlot) end
@@ -387,38 +378,49 @@ local function ensureWeapon()
     local newWeapon = handInfo()
     if newWeapon and isWeapon(newWeapon) then
         print("Arma equipada: " .. newWeapon)
-        cachedWeaponSlot = nil  -- Invalidar cache (el arma ya no está en stash)
+        cachedWeaponSlot = nil
         lastWeaponScan = os.clock()
         return true
     end
 
-    -- No es un arma, devolver
     if newWeapon then pcall(android.storeItem, weaponSlot) end
     if tempSlot then pcall(android.equipSlot, tempSlot) end
     return false
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- REPOSTAJE DINÁMICO
+-- REPOSTAJE INTELIGENTE
 -- ═══════════════════════════════════════════════════════════════
-local function refuel()
-    local fuelSlot = findRedstoneSlot()
-    if not fuelSlot then
-        return false, "sin redstone en la stash"
+local function isAreaSafe()
+    local self = android.getSelf()
+    for _, mobType in ipairs(TARGET_TYPES) do
+        local ok, mob = pcall(android.getClosestMob, mobType)
+        if ok and type(mob) == "table" and mob.uuid and mob.posX then
+            local dx = mob.posX - self.posX
+            local dy = mob.posY - self.posY
+            local dz = mob.posZ - self.posZ
+            if (dx*dx + dy*dy + dz*dz) < REFUEL_SAFE_RADIUS_SQ then
+                return false
+            end
+        end
     end
+    return true
+end
+
+local function refuel()
+    if inCombat then return false, "en combate" end
+    if (os.clock() - lastCombatEnd) < 5 then return false, "post-combate" end
+
+    local fuelSlot = findRedstoneSlot()
+    if not fuelSlot then return false, "sin redstone en stash" end
 
     local heldName = handInfo()
     local tempSlot
-
     if heldName then
         tempSlot = findEmptySlot(fuelSlot)
-        if not tempSlot then
-            return false, "sin ranura libre"
-        end
+        if not tempSlot then return false, "sin ranura libre" end
         local ok, err = pcall(android.storeItem, tempSlot)
-        if not ok or apiFailed(err) then
-            return false, "no se guardó el arma"
-        end
+        if not ok or apiFailed(err) then return false, "no se guardó arma" end
     end
 
     local ok, result = pcall(android.equipSlot, fuelSlot)
@@ -431,7 +433,7 @@ local function refuel()
     if not name or not isRedstone(name) then
         if name then pcall(android.storeItem, fuelSlot) end
         if tempSlot then pcall(android.equipSlot, tempSlot) end
-        return false, "r" .. fuelSlot .. " no es redstone (" .. tostring(name) .. ")"
+        return false, "r" .. fuelSlot .. " no es redstone"
     end
 
     local before = android.fuelLevel()
@@ -444,75 +446,46 @@ local function refuel()
 
     if not called then return false, tostring(fuelResult) end
     if after > before then
-        cachedFuelSlot = fuelSlot  -- Actualizar cache
+        cachedFuelSlot = fuelSlot
         return true, "fuel → " .. tostring(after)
     end
     return false, "no aumentó"
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE (NTGL)
+-- COMBATE (solo left click)
 -- ═══════════════════════════════════════════════════════════════
+-- LEFT CLICK = disparar (NTGL auto-recarga si mag vacío)
+-- RIGHT CLICK = apuntar (ADS) - opcional antes de disparar
+
+local function aimAt(mob)
+    if not AIM_BEFORE_SHOT then return end
+    local ok, result = pcall(android.useEntity, mob.uuid)
+    if ok and not apiFailed(result) then
+        sleep(AIM_DELAY)
+    end
+end
+
 local function fireAt(mob)
+    local now = os.clock()
+    if now - lastFireTime < FIRE_COOLDOWN then return false end
+
     local weapon = handInfo()
     if not weapon or not isWeapon(weapon) then
-        -- Intentar equipar arma automáticamente
         ensureWeapon()
         return false
     end
 
+    -- Opcional: apuntar antes de disparar
+    aimAt(mob)
+
+    -- LEFT CLICK: NTGL dispara o auto-recarga+dispara
     local ok, result = pcall(android.attack, mob.uuid)
     if not ok or apiFailed(result) then return false end
 
+    lastFireTime = now
     shotsFired = shotsFired + 1
     return true
-end
-
-local function tryReload(mob)
-    local now = os.clock()
-    if now - lastReloadTime < RELOAD_COOLDOWN then return false end
-
-    local cap = getMagCapacity()
-    if shotsFired < cap then return false end
-
-    local success = false
-
-    if mob and mob.uuid then
-        local ok, result = pcall(android.useEntity, mob.uuid)
-        if ok and not apiFailed(result) then success = true end
-    end
-
-    if not success then
-        local self = android.getSelf()
-        local bx = math.floor(self.posX)
-        local by = math.floor(self.posY) - 1
-        local bz = math.floor(self.posZ)
-        local ok, result = pcall(android.useBlock, bx, by, bz)
-        if ok and not apiFailed(result) then success = true end
-    end
-
-    if not success then
-        local self = android.getSelf()
-        local bx = math.floor(self.posX) + 1
-        local by = math.floor(self.posY)
-        local bz = math.floor(self.posZ)
-        local ok, result = pcall(android.useBlock, bx, by, bz)
-        if ok and not apiFailed(result) then success = true end
-    end
-
-    lastReloadTime = now
-
-    if success then
-        shotsFired = 0
-        reloadFailCount = 0
-    else
-        reloadFailCount = reloadFailCount + 1
-        if reloadFailCount == 3 then
-            print("AVISO: 3 recargas fallidas. ¿Munición en la HOTBAR?")
-        end
-        shotsFired = 0
-    end
-    return success
 end
 
 local function engage(mob)
@@ -523,8 +496,6 @@ local function engage(mob)
     local dy = mob.posY - self.posY
     local dz = mob.posZ - self.posZ
     local distSq = dx*dx + dy*dy + dz*dz
-
-    tryReload(mob)
 
     if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
@@ -545,10 +516,10 @@ end
 local function tryHeal()
     local self = android.getSelf()
     if not self or not self.health or self.health >= HEAL_AT then return end
+    if inCombat then return end
 
     local heldName = handInfo()
     local tempSlot
-
     if heldName then
         tempSlot = findEmptySlot()
         if not tempSlot then return end
@@ -591,6 +562,7 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function collectRoleDrop(drop)
     if not drop then return false end
+    if inCombat then return false end
 
     local heldName = handInfo()
     if heldName then return false end
@@ -624,20 +596,43 @@ local function collectRoleDrops()
 end
 
 -- ═══════════════════════════════════════════════════════════════
+-- BÚSQUEDA DE HOSTILES
+-- ═══════════════════════════════════════════════════════════════
+local function findHostile()
+    local self = android.getSelf()
+    local closest, closestType, closestDistance
+
+    for _, mobType in ipairs(TARGET_TYPES) do
+        local ok, mob = pcall(android.getClosestMob, mobType)
+        if ok and type(mob) == "table"
+            and mob.uuid and mob.posX and mob.posY and mob.posZ then
+            local dx = mob.posX - self.posX
+            local dy = mob.posY - self.posY
+            local dz = mob.posZ - self.posZ
+            local distSq = dx*dx + dy*dy + dz*dz
+            if not closestDistance or distSq < closestDistance then
+                closest, closestType, closestDistance = mob, mobType, distSq
+            end
+        end
+    end
+    return closest, closestType
+end
+
+-- ═══════════════════════════════════════════════════════════════
 -- INFORME
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v11 ═══")
-    print("Arma en mano: " .. tostring(weapon or "VACÍA"))
+    print("═══ Fusilero v12 ═══")
+    print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon and isWeapon(weapon) then
-        print("→ NTGL activo: left=disparo, right=recarga")
+        print("→ Left=disparo+recarga | Right=apuntar")
     elseif weapon then
         print("⚠ No es arma CGS/CBC")
     else
-        print("→ Buscará arma en stash automáticamente")
+        print("→ Buscará arma en stash")
     end
-    print("Stash: " .. STASH_SIZE .. " ranuras (0-" .. tostring(STASH_SIZE-1) .. ")")
+    print("Refuel: solo sin hostiles a <" .. tostring(math.sqrt(REFUEL_SAFE_RADIUS_SQ)) .. " bloques")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -711,51 +706,28 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v11 | " .. state.mode
+                        unitName .. " | v12 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
-                        .. " | shots=" .. tostring(shotsFired) .. "/" .. tostring(currentMagCap))
+                        .. " | combat=" .. tostring(inCombat))
                 elseif command == "rescan" then
                     cachedFuelSlot = nil
                     cachedWeaponSlot = nil
                     lastFuelScan = 0
                     lastWeaponScan = 0
-                    pcall(android.sendChatMessage, "Rescan de stash iniciado.")
+                    pcall(android.sendChatMessage, "Rescan OK.")
                 elseif command == "dump" then
                     local lines = { "MANO: " .. tostring(handInfo() or "vacia") }
                     for i = 0, STASH_SIZE - 1 do
                         local occ = slotOccupied(i)
-                        lines[#lines + 1] = "r" .. i .. ": " .. (occ and "[x]" or "[.]")
+                        lines[#lines + 1] = "r" .. i .. ":" .. (occ and "x" or ".")
                     end
                     pcall(android.sendChatMessage, "INV: " .. table.concat(lines, " "))
                 end
             end
         end
     end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- BÚSQUEDA DE HOSTILES
--- ═══════════════════════════════════════════════════════════════
-local function findHostile()
-    local self = android.getSelf()
-    local closest, closestType, closestDistance
-
-    for _, mobType in ipairs(TARGET_TYPES) do
-        local ok, mob = pcall(android.getClosestMob, mobType)
-        if ok and type(mob) == "table"
-            and mob.uuid and mob.posX and mob.posY and mob.posZ then
-            local dx = mob.posX - self.posX
-            local dy = mob.posY - self.posY
-            local dz = mob.posZ - self.posZ
-            local distSq = dx*dx + dy*dy + dz*dz
-            if not closestDistance or distSq < closestDistance then
-                closest, closestType, closestDistance = mob, mobType, distSq
-            end
-        end
-    end
-    return closest, closestType
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -783,41 +755,53 @@ local function patrol(home, state, unit)
     while true do
         local self = android.getSelf()
         local task = android.currentTask()
+        local now = os.clock()
 
+        -- Retirada crítica
         if self.health and self.health <= RETREAT_HEALTH and task ~= "idle" then
             android.cancelTask()
             task = "idle"
-            if os.clock() - lastAlert >= ALERT_DELAY then
+            if now - lastAlert >= ALERT_DELAY then
                 pcall(android.sendChatMessage,
                     "ALERTA: HP=" .. tostring(self.health) .. ". Replegando.")
-                lastAlert = os.clock()
+                lastAlert = now
             end
         end
 
         if task == "idle" then
-            -- Asegurar arma (cada 10s o si no hay)
-            local now = os.clock()
-            if now - lastWeaponCheck >= 10 then
+            -- Detectar combate
+            local mob, mobType = findHostile()
+            local wasInCombat = inCombat
+            inCombat = (mob ~= nil)
+
+            if wasInCombat and not inCombat then
+                lastCombatEnd = now
+                shotsFired = 0
+            end
+
+            -- Mantenimiento (solo sin combate)
+            if not inCombat and now - lastWeaponCheck >= 10 then
                 ensureWeapon()
                 lastWeaponCheck = now
             end
 
-            -- Curarse
-            if now - lastHealAttempt >= HEAL_RETRY_DELAY then
+            if not inCombat and now - lastHealAttempt >= HEAL_RETRY_DELAY then
                 tryHeal()
                 lastHealAttempt = now
             end
 
-            -- Recogida
-            if now - lastRoleDropScan >= PICKUP_SCAN_DELAY then
+            if not inCombat and now - lastRoleDropScan >= PICKUP_SCAN_DELAY then
                 collectRoleDrops()
                 lastRoleDropScan = now
             end
 
-            -- Repostaje
+            -- Refuel inteligente
             local fuel = android.fuelLevel()
             if fuel < REFUEL_AT
-                and now - lastRefuelAttempt >= REFUEL_RETRY_DELAY then
+                and now - lastRefuelAttempt >= REFUEL_RETRY_DELAY
+                and not inCombat
+                and (now - lastCombatEnd) >= 5
+                and isAreaSafe() then
                 local success, reason = refuel()
                 lastRefuelAttempt = now
                 fuel = android.fuelLevel()
@@ -836,12 +820,10 @@ local function patrol(home, state, unit)
                 lastTarget = nil
                 android.moveTo(home)
             elseif state.mode == "patrol" then
-                local mob, mobType = findHostile()
                 if mob then
                     if lastTarget ~= mob.uuid then
                         lastTarget = mob.uuid
                         shotsFired = 0
-                        reloadFailCount = 0
                         if now - lastAlert >= ALERT_DELAY then
                             pcall(android.sendChatMessage,
                                 "ALERTA: " .. mobType .. " → fuego.")
@@ -881,7 +863,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v11 detenido.")
+    print("Fusilero v12 detenido.")
 end
 
 local ok, err = pcall(main)
