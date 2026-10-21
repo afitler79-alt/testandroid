@@ -228,33 +228,37 @@ local function doRefuel()
     if inCombat then return end
     if os.clock()-lastCombatEnd < 5 then return end
 
-    local fuelSlot = findFuelSlot()
-    if fuelSlot == nil then
+    local heldName = hand()
+    local fuelInHand = heldName and isFuel(heldName)
+    local fuelSlot
+    if not fuelInHand then fuelSlot = findFuelSlot() end
+    if not fuelInHand and fuelSlot == nil then
         print("Refuel: no se encontró redstone en la mochila")
         return
     end
 
-    local h = hand()
     local tmp = nil
-    if h then
+    if not fuelInHand and heldName then
         tmp = findFreeSlot(fuelSlot)
         if not tmp then return end
         local ok,r = pcall(android.storeItem,tmp)
         if not ok or fail(r) then return end
     end
 
-    local ok,r = pcall(android.equipSlot,fuelSlot)
-    if not ok or fail(r) then
-        if tmp then pcall(android.equipSlot,tmp) end
-        return
-    end
+    if not fuelInHand then
+        local ok,r = pcall(android.equipSlot,fuelSlot)
+        if not ok or fail(r) then
+            if tmp then pcall(android.equipSlot,tmp) end
+            return
+        end
 
-    local n = hand()
-    if not n or not isFuel(n) then
-        if n then pcall(android.storeItem,fuelSlot) end
-        if tmp then pcall(android.equipSlot,tmp) end
-        print("Refuel: no se pudo equipar redstone de r"..fuelSlot)
-        return
+        local n = hand()
+        if not n or not isFuel(n) then
+            if n then pcall(android.storeItem,fuelSlot) end
+            if tmp then pcall(android.equipSlot,tmp) end
+            print("Refuel: no se pudo equipar redstone de r"..fuelSlot)
+            return
+        end
     end
 
     local before = android.fuelLevel()
@@ -262,7 +266,7 @@ local function doRefuel()
     local after = android.fuelLevel()
 
     local rem = hand()
-    if rem then pcall(android.storeItem,fuelSlot) end
+    if not fuelInHand and rem then pcall(android.storeItem,fuelSlot) end
     if tmp then pcall(android.equipSlot,tmp) end
 
     if after > before then
