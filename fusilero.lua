@@ -466,8 +466,7 @@ local function main()
 
                 if task~="idle" then
                     sleep(SCAN_DELAY)
-                    return
-                end
+                else
 
                 local mob,mobType=findMob()
                 local wasC=inCombat
@@ -518,6 +517,7 @@ local function main()
                     end
                 elseif state.mode=="hold" then
                     lastTarget=nil
+                end
                 end
                 sleep(SCAN_DELAY)
             end
