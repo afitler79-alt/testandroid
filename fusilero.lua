@@ -1,4 +1,4 @@
--- FUSILERO v18.5
+-- FUSILERO v18.6
 -- CC:Androids 1.3.0 / NTGL 3.1.2
 -- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
 
@@ -142,47 +142,46 @@ local function isFuel(n)
     return l:find("redstone",1,true)~=nil
 end
 
--- SOLO lee con getSlotInfo. NO equipa nada.
-local function slotEmpty(i)
-    local ok,r = pcall(android.getSlotInfo,i)
-    if not ok then return true end
-    if type(r)=="boolean" then return not r end
-    if type(r)=="string" then
-        local l=r:lower()
-        return l=="" or l=="empty" or l=="minecraft:air" or l=="air" or l=="a"
-    end
-    return true
+local function emptyName(name)
+    if type(name)~="string" then return name==false or name==nil end
+    local lower=name:lower()
+    return lower=="" or lower=="empty" or lower=="minecraft:air" or lower=="air" or lower=="a"
 end
 
--- Busca ranura libre SIN equipar nada
-local function findFreeSlot(exclude)
+-- Lee las nueve ranuras que expone CC:Androids. Solo devuelve nombres y
+-- estados; equipar, guardar y restaurar ocurren en las funciones de acción.
+local function scanInventory()
+    local inventory={}
     for i=0,STASH_SIZE-1 do
-        if i~=exclude and slotEmpty(i) then
-            return i
+        local ok,name,extra=pcall(android.getSlotInfo,i)
+        if ok then
+            if type(name)=="table" then
+                name=name.name or name.id or name.item
+            elseif type(name)=="boolean" and type(extra)=="string" then
+                name=extra
+            end
+            inventory[#inventory+1]={slot=i,name=name,empty=emptyName(name)}
         end
+    end
+    return inventory
+end
+
+-- Busca espacio libre consultando el inventario actual, sin ranuras asignadas.
+local function findFreeSlot(exclude)
+    for _,item in ipairs(scanInventory()) do
+        if item.slot~=exclude and item.empty then return item.slot end
     end
     return nil
 end
 
--- Busca redstone en cualquier ranura; getSlotInfo solo consulta el inventario.
+-- Busca redstone en cualquier ranura del inventario actual.
 local function findFuelSlot()
-    local found = {}
-    for i=0,STASH_SIZE-1 do
-        local ok,n,occupied = pcall(android.getSlotInfo,i)
-        if ok then
-            -- CC:Androids normalmente devuelve (nombre, ocupado); tolera
-            -- también una tabla por compatibilidad con otras versiones.
-            if type(n)=="table" then
-                n=n.name or n.id or n.item
-            end
-            if isFuel(n) then return i end
-            if type(occupied)=="string" and isFuel(occupied) then return i end
-            found[#found+1] = "r"..i.."="..tostring(n)
-        else
-            found[#found+1] = "r"..i.."=error"
-        end
+    local found={}
+    for _,item in ipairs(scanInventory()) do
+        if isFuel(item.name) then return item.slot end
+        found[#found+1]="r"..item.slot.."="..tostring(item.name)
     end
-    return nil, table.concat(found, ", ")
+    return nil,table.concat(found,", ")
 end
 
 local function cgsWeaponRank(name)
@@ -200,13 +199,11 @@ end
 -- de que esté colocada en una ranura concreta.
 local function findWeaponSlot()
     local bestSlot, bestRank
-    for i=0,STASH_SIZE-1 do
-        local ok,n = pcall(android.getSlotInfo,i)
-        if ok and type(n)=="table" then n=n.name or n.id or n.item end
-        local rank = ok and cgsWeaponRank(n) or nil
+    for _,item in ipairs(scanInventory()) do
+        local rank=cgsWeaponRank(item.name)
         if rank then
             if not bestRank or rank<bestRank then
-                bestSlot,bestRank=i,rank
+                bestSlot,bestRank=item.slot,rank
             end
         end
     end
@@ -444,7 +441,7 @@ local function main()
         return
     end
 
-    print("=== v18.5 ===")
+    print("=== v18.6 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
