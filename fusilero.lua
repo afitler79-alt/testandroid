@@ -3,7 +3,6 @@
 -- Ranuras fijas. findFreeSlot usa getSlotInfo (NO equipa).
 -- Solo equipa en refuel o al arrancar.
 
-local FUEL_SLOT = 0
 local WEAPON_SLOT = 1
 
 local SCAN_DELAY = 0.8
@@ -154,20 +153,60 @@ local function findFreeSlot(exclude)
     return nil
 end
 
--- Equipar arma desde WEAPON_SLOT (solo cuando hace falta)
+-- Busca redstone en cualquier ranura; getSlotInfo solo consulta el inventario.
+local function findFuelSlot()
+    for i=0,STASH_SIZE-1 do
+        local ok,n = pcall(android.getSlotInfo,i)
+        if ok and isFuel(n) then return i end
+    end
+    return nil
+end
+
+local WEAPON_PRIORITY = {
+    "cgs:revolver", "cgs:shotgun", "cgs:gatling", "cgs:nailgun",
+    "cgs:flintlock", "cgs:blazegun", "cgs:launcher",
+    "cgs:frag_grenade", "cgs:pneumatic_hammer",
+}
+
+-- Elige un arma CGS del inventario; la preferencia es estable y no depende
+-- de que esté colocada en una ranura concreta.
+local function findWeaponSlot()
+    local bestSlot, bestRank
+    for i=0,STASH_SIZE-1 do
+        local ok,n = pcall(android.getSlotInfo,i)
+        if ok and type(n)=="string" and n:lower():find("cgs:",1,true) and isWep(n) then
+            local rank = #WEAPON_PRIORITY + 1
+            local lower = n:lower()
+            for j,id in ipairs(WEAPON_PRIORITY) do
+                if lower:find(id,1,true) then rank=j break end
+            end
+            if not bestRank or rank<bestRank then
+                bestSlot,bestRank=i,rank
+            end
+        end
+    end
+    return bestSlot
+end
+
+-- Equipa un arma CGS disponible sin reservar una ranura fija.
 local function equipWeapon()
     local h = hand()
-    if h and isWep(h) then return true end
+    local weaponSlot = findWeaponSlot()
+    if h and isWep(h) and (h:lower():find("cgs:",1,true)==nil or weaponSlot==nil) then
+        return true
+    end
+    if h and isWep(h) and h:lower():find("cgs:",1,true) then return true end
+    if weaponSlot == nil then return false end
 
     local tmp = nil
     if h then
-        tmp = findFreeSlot(WEAPON_SLOT)
+        tmp = findFreeSlot(weaponSlot)
         if not tmp then return false end
         local ok,r = pcall(android.storeItem,tmp)
         if not ok or fail(r) then return false end
     end
 
-    local ok,r = pcall(android.equipSlot,WEAPON_SLOT)
+    local ok,r = pcall(android.equipSlot,weaponSlot)
     if not ok or fail(r) then
         if tmp then pcall(android.equipSlot,tmp) end
         return false
@@ -179,7 +218,7 @@ local function equipWeapon()
         return true
     end
 
-    if nw then pcall(android.storeItem,WEAPON_SLOT) end
+    if nw then pcall(android.storeItem,weaponSlot) end
     if tmp then pcall(android.equipSlot,tmp) end
     return false
 end
@@ -189,16 +228,22 @@ local function doRefuel()
     if inCombat then return end
     if os.clock()-lastCombatEnd < 5 then return end
 
+    local fuelSlot = findFuelSlot()
+    if fuelSlot == nil then
+        print("Refuel: no se encontró redstone en la mochila")
+        return
+    end
+
     local h = hand()
     local tmp = nil
     if h then
-        tmp = findFreeSlot(FUEL_SLOT)
+        tmp = findFreeSlot(fuelSlot)
         if not tmp then return end
         local ok,r = pcall(android.storeItem,tmp)
         if not ok or fail(r) then return end
     end
 
-    local ok,r = pcall(android.equipSlot,FUEL_SLOT)
+    local ok,r = pcall(android.equipSlot,fuelSlot)
     if not ok or fail(r) then
         if tmp then pcall(android.equipSlot,tmp) end
         return
@@ -206,9 +251,9 @@ local function doRefuel()
 
     local n = hand()
     if not n or not isFuel(n) then
-        if n then pcall(android.storeItem,FUEL_SLOT) end
+        if n then pcall(android.storeItem,fuelSlot) end
         if tmp then pcall(android.equipSlot,tmp) end
-        print("Refuel: r"..FUEL_SLOT.." sin redstone")
+        print("Refuel: no se pudo equipar redstone de r"..fuelSlot)
         return
     end
 
@@ -217,7 +262,7 @@ local function doRefuel()
     local after = android.fuelLevel()
 
     local rem = hand()
-    if rem then pcall(android.storeItem,FUEL_SLOT) end
+    if rem then pcall(android.storeItem,fuelSlot) end
     if tmp then pcall(android.equipSlot,tmp) end
 
     if after > before then
@@ -253,7 +298,7 @@ local function combat(mob)
     local d=dx*dx+dy*dy+dz*dz
 
     local w = hand()
-    if not w or not isWep(w) then
+    if not w or not isWep(w) or (w:lower():find("cgs:",1,true)==nil and findWeaponSlot()~=nil) then
         equipWeapon()
         if d > MIN_RANGE_SQ then
             android.moveTo({x=mob.posX,y=mob.posY,z=mob.posZ})
@@ -363,8 +408,8 @@ local function main()
     end
 
     print("=== v18.1 ===")
-    print("FUEL_SLOT="..FUEL_SLOT)
-    print("WEAPON_SLOT="..WEAPON_SLOT)
+    print("FUEL_SLOT=dinámico")
+    print("Arma: selección automática CGS")
     print("Mano: "..tostring(hand() or "VACIA"))
     print("===========")
 
@@ -421,7 +466,7 @@ local function main()
 
                 if not inCombat and now-lastWep>=15 then
                     local w=hand()
-                    if not w or not isWep(w) then
+                    if not w or not isWep(w) or (w:lower():find("cgs:",1,true)==nil and findWeaponSlot()~=nil) then
                         equipWeapon()
                     end
                     lastWep=now
