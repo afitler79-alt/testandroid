@@ -1,16 +1,17 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v12.1 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- ROL FUSILERO v12.2 (CC:Androids 1.3.0 / Forge 1.20.1)
 -- NTGL 3.1.2:
 --   Left click (attack)  = disparar + auto-recarga
 --   Right click (useEnt) = apuntar (ADS)
 -- NO ataca sin arma CGS/CBC en mano.
+-- getHandInfo puede devolver nombre display o ID.
 -- Stash: 11 ranuras (0-10). Escaneo dinámico.
 -- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
 local SCAN_DELAY = 0.8
-local PATROL_RADIUS = 6
+local PATROL_RADIUS = 5
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 15
 local REFUEL_SAFE_RADIUS_SQ = 20*20
@@ -20,6 +21,7 @@ local HEAL_AT = 12
 local HEAL_RETRY_DELAY = 8
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
+local ATTACK_TIMEOUT = 15
 local OWNERS_FILE = "owners.cfg"
 
 -- ═══════════════════════════════════════════════════════════════
@@ -52,7 +54,7 @@ local MAG_CAPACITY = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- ARMAS
+-- ARMAS (IDs)
 -- ═══════════════════════════════════════════════════════════════
 local CGS_WEAPONS = {
     "cgs:flintlock", "cgs:revolver", "cgs:shotgun",
@@ -71,17 +73,29 @@ local ALL_WEAPONS = {}
 for _, w in ipairs(CGS_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 for _, w in ipairs(CBC_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 
+-- Nombres display que puede devolver getHandInfo
+local WEAPON_DISPLAY_NAMES = {
+    "flintlock", "revolver", "shotgun", "nailgun", "gatling",
+    "blazegun", "launcher", "pneumatic hammer", "frag grenade",
+    "ballistic pistol", "ballistic carbine", "ballistic shotgun",
+    "ballistic sniper", "ballistic gatling", "ballistic minigun",
+    "ballistic grenade launcher", "ballistic cannon",
+}
+
 -- ═══════════════════════════════════════════════════════════════
 -- MUNICIÓN
 -- ═══════════════════════════════════════════════════════════════
 local CGS_AMMO = {
     "cgs:paper_cartridge", "cgs:paper_shot",
+    "cgs:flintlock_bullet", "cgs:revolver_round",
+    "cgs:shotgun_round", "cgs:nail", "cgs:gatling_round",
+    "cgs:piercing_revolver_round", "cgs:incendiary_shotgun_round",
     "cgs:round_revolver", "cgs:round_revolver_piercing", "cgs:round_revolver_blank",
-    "cgs:round_shotgun", "cgs:round_shotgun_flechette", "cgs:round_shotgun_flechette_steel",
-    "cgs:round_shotgun_incendiary", "cgs:round_shotgun_blank",
+    "cgs:round_shotgun", "cgs:round_shotgun_flechette",
+    "cgs:round_shotgun_flechette_steel", "cgs:round_shotgun_incendiary",
+    "cgs:round_shotgun_blank",
     "cgs:round_gatling", "cgs:round_gatling_piercing", "cgs:round_gatling_blank",
-    "cgs:nail", "cgs:nail_steel",
-    "cgs:rocket", "cgs:rocket_small",
+    "cgs:nail_steel", "cgs:rocket", "cgs:rocket_small",
     "cgs:spear", "cgs:lead_balls",
     "cgs:shell_gatling", "cgs:shell_revolver", "cgs:shell_shotgun",
 }
@@ -98,6 +112,12 @@ local ALL_AMMO = {}
 for _, a in ipairs(CGS_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
 for _, a in ipairs(CBC_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
 
+-- Nombres display de munición
+local AMMO_DISPLAY_NAMES = {
+    "bullet", "round", "cartridge", "shot", "nail",
+    "rocket", "spear", "lead ball", "shell", "grenade",
+}
+
 -- ═══════════════════════════════════════════════════════════════
 -- OTROS ITEMS
 -- ═══════════════════════════════════════════════════════════════
@@ -110,8 +130,18 @@ local FOOD_ITEMS = {
     "farmersdelight:harvest_stew", "farmersdelight:chocolate_bar",
 }
 
+local FOOD_DISPLAY_NAMES = {
+    "cooked beef", "cooked porkchop", "cooked chicken", "cooked mutton",
+    "golden carrot", "golden apple", "bread", "cooked cod", "cooked salmon",
+    "beef ribs", "meat on a stick", "harvest stew", "chocolate bar",
+}
+
 local POTION_ITEMS = {
     "minecraft:potion", "minecraft:splash_potion",
+}
+
+local POTION_DISPLAY_NAMES = {
+    "potion", "splash potion",
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -168,6 +198,7 @@ local lastWeaponScan = 0
 local SCAN_CACHE_TIME = 10
 local inCombat = false
 local lastCombatEnd = 0
+local attackStartTime = 0
 
 -- ═══════════════════════════════════════════════════════════════
 -- UTILIDADES
@@ -181,7 +212,8 @@ local function slotOccupied(index)
     if not ok then return false end
     if type(result) == "boolean" then return result end
     if type(result) == "string" then
-        return result ~= "" and result ~= "Empty" and result ~= "minecraft:air" and result ~= "air"
+        return result ~= "" and result ~= "Empty" and result ~= "minecraft:air"
+            and result ~= "air" and result ~= "a"
     end
     return false
 end
@@ -196,22 +228,42 @@ local function handInfo()
     return name, tonumber(count) or 0
 end
 
-local function matchesList(name, list)
+-- Match por ID o nombre display
+local function matchesAny(name, idList, displayList)
     if type(name) ~= "string" then return false end
     local lower = name:lower()
-    for _, item in ipairs(list) do
-        if lower:find(item, 1, true) then return true end
+    if idList then
+        for _, item in ipairs(idList) do
+            if lower:find(item, 1, true) then return true end
+        end
+    end
+    if displayList then
+        for _, item in ipairs(displayList) do
+            if lower:find(item, 1, true) then return true end
+        end
     end
     return false
 end
 
 local function isWeapon(name)
-    return matchesList(name, ALL_WEAPONS)
+    return matchesAny(name, ALL_WEAPONS, WEAPON_DISPLAY_NAMES)
+end
+
+local function isAmmo(name)
+    return matchesAny(name, ALL_AMMO, AMMO_DISPLAY_NAMES)
 end
 
 local function isRedstone(name)
     if type(name) ~= "string" then return false end
     return name:lower():find("redstone", 1, true) ~= nil
+end
+
+local function isFood(name)
+    return matchesAny(name, FOOD_ITEMS, FOOD_DISPLAY_NAMES)
+end
+
+local function isPotion(name)
+    return matchesAny(name, POTION_ITEMS, POTION_DISPLAY_NAMES)
 end
 
 local function findEmptySlot(exclude)
@@ -248,7 +300,7 @@ local function getMagCapacity()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- ESCANEO DINÁMICO
+-- ESCANEO DINÁMICO (equipSlot + getHandInfo)
 -- ═══════════════════════════════════════════════════════════════
 local function findRedstoneSlot()
     local now = os.clock()
@@ -453,16 +505,15 @@ local function refuel()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE (solo left click, requiere arma en mano)
+-- COMBATE (requiere arma en mano)
 -- ═══════════════════════════════════════════════════════════════
-
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
 
     local weapon = handInfo()
 
-    -- BLOQUEO: sin arma CGS/CBC en mano NO se ataca
+    -- BLOQUEO: sin arma CGS/CBC NO se ataca
     if not weapon or not isWeapon(weapon) then
         ensureWeapon()
         return false
@@ -540,7 +591,7 @@ local function tryHeal()
             local ok, eq = pcall(android.equipSlot, index)
             if ok and not apiFailed(eq) then
                 local name = handInfo()
-                if name and (matchesList(name, POTION_ITEMS) or matchesList(name, FOOD_ITEMS)) then
+                if name and (isPotion(name) or isFood(name)) then
                     print("Comida/poción (r" .. index .. "). HP=" .. tostring(self.health))
                     found = true
                     break
@@ -630,7 +681,7 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v12.1 ═══")
+    print("═══ Fusilero v12.2 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon and isWeapon(weapon) then
         print("→ Left=disparo+recarga | Right=apuntar")
@@ -640,6 +691,7 @@ local function reportLoadout()
         print("→ Buscará arma en stash")
     end
     print("Refuel: solo sin hostiles a <20 bloques")
+    print("Timeout ataque: " .. ATTACK_TIMEOUT .. "s")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -713,7 +765,7 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v12.1 | " .. state.mode
+                        unitName .. " | v12.2 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
@@ -763,6 +815,18 @@ local function patrol(home, state, unit)
         local self = android.getSelf()
         local task = android.currentTask()
         local now = os.clock()
+
+        -- TIMEOUT: si lleva >ATTACK_TIMEOUT atacando, cancelar
+        if task == "attacking" and lastTarget then
+            if now - attackStartTime > ATTACK_TIMEOUT then
+                android.cancelTask()
+                task = "idle"
+                lastTarget = nil
+                inCombat = false
+                lastCombatEnd = now
+                print("Timeout ataque (" .. ATTACK_TIMEOUT .. "s); cancelando.")
+            end
+        end
 
         -- Retirada crítica
         if self.health and self.health <= RETREAT_HEALTH and task ~= "idle" then
@@ -831,6 +895,7 @@ local function patrol(home, state, unit)
                     if lastTarget ~= mob.uuid then
                         lastTarget = mob.uuid
                         shotsFired = 0
+                        attackStartTime = now
                         if now - lastAlert >= ALERT_DELAY then
                             pcall(android.sendChatMessage,
                                 "ALERTA: " .. mobType .. " → fuego.")
@@ -867,10 +932,10 @@ local function main()
     parallel.waitForAny(
         function() patrol(home, state, self) end,
         waitForStop,
-        function() listenForCommands(self, state, owners) end
+        function() listenForCommands(self, state, self) end
     )
     android.cancelTask()
-    print("Fusilero v12.1 detenido.")
+    print("Fusilero v12.2 detenido.")
 end
 
 local ok, err = pcall(main)
