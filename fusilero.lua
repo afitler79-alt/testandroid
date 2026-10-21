@@ -1,8 +1,9 @@
--- FUSILERO v18.6
+-- FUSILERO v18.7
 -- CC:Androids 1.3.0 / NTGL 3.1.2
 -- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
 
 local SCAN_DELAY = 0.8
+local STATUS_REPORT_INTERVAL = 10
 local PATROL_RADIUS = 8
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 15
@@ -164,6 +165,18 @@ local function scanInventory()
         end
     end
     return inventory
+end
+
+local function inventorySummary(inventory)
+    local bySlot={}
+    for _,item in ipairs(inventory) do
+        bySlot[item.slot]=item.empty and "-" or tostring(item.name)
+    end
+    local slots={}
+    for i=0,STASH_SIZE-1 do
+        slots[#slots+1]="r"..i.."="..tostring(bySlot[i] or "?")
+    end
+    return table.concat(slots," | ")
 end
 
 -- Busca espacio libre consultando el inventario actual, sin ranuras asignadas.
@@ -420,11 +433,14 @@ local function listen(unit,state,owners)
                 elseif c=="status" then
                     local s=android.getSelf()
                     local w=hand()
+                    local inv=tostring(state.inventoryStatus or "-")
+                    if #inv>120 then inv=inv:sub(1,117).."..." end
                     pcall(android.sendChatMessage,un.."|"..state.mode
                         .."|HP="..tostring(s.health)
                         .."|fuel="..tostring(android.fuelLevel())
                         .."|wep="..tostring(w or "-")
-                        .."|combat="..tostring(inCombat))
+                        .."|combat="..tostring(inCombat)
+                        .."|inv="..inv)
                 end
             end
         end
@@ -441,11 +457,18 @@ local function main()
         return
     end
 
-    print("=== v18.6 ===")
+    local initialInventory=scanInventory()
+    state.inventoryStatus=inventorySummary(initialInventory)
+    print("=== v18.7 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
     print("Mano: "..tostring(hand() or "VACIA"))
+    print("Inventario: "..state.inventoryStatus)
+    print("Estado: HP="..tostring(s.health)
+        .." | fuel="..tostring(android.fuelLevel())
+        .." | tarea="..tostring(android.currentTask())
+        .." | modo="..state.mode)
     print("===========")
 
     equipWeapon()
@@ -460,6 +483,9 @@ local function main()
     local lastRefuel=0
     local lastAlert=0
     local lastWep=0
+    local lastInventorySignature=state.inventoryStatus
+    local lastStatusSignature=nil
+    local lastStatusReport=0
 
     parallel.waitForAny(
         function()
@@ -467,6 +493,30 @@ local function main()
                 local self=android.getSelf()
                 local task=android.currentTask()
                 local now=os.clock()
+                local inventory=scanInventory()
+                state.inventoryStatus=inventorySummary(inventory)
+                local held,heldCount=hand()
+                local fuelNow=android.fuelLevel()
+                local hpNow=self and self.health or "?"
+                if state.inventoryStatus~=lastInventorySignature then
+                    print("Inventario: "..state.inventoryStatus)
+                    lastInventorySignature=state.inventoryStatus
+                end
+                local signature=table.concat({
+                    tostring(hpNow),tostring(task),state.mode,
+                    tostring(held or "-"),tostring(heldCount),tostring(inCombat),
+                },"|")
+                if signature~=lastStatusSignature or now-lastStatusReport>=STATUS_REPORT_INTERVAL then
+                    print("Scan | HP="..tostring(hpNow)
+                        .." | fuel="..tostring(fuelNow)
+                        .." | tarea="..tostring(task)
+                        .." | modo="..state.mode
+                        .." | mano="..tostring(held or "VACIA")
+                        .." x"..tostring(heldCount)
+                        .." | combate="..tostring(inCombat))
+                    lastStatusSignature=signature
+                    lastStatusReport=now
+                end
 
                 if task=="attacking" and lastTarget then
                     if now-attackStart>ATTACK_TIMEOUT then
