@@ -156,8 +156,16 @@ end
 -- Busca redstone en cualquier ranura; getSlotInfo solo consulta el inventario.
 local function findFuelSlot()
     for i=0,STASH_SIZE-1 do
-        local ok,n = pcall(android.getSlotInfo,i)
-        if ok and isFuel(n) then return i end
+        local ok,n,occupied = pcall(android.getSlotInfo,i)
+        if ok then
+            -- CC:Androids normalmente devuelve (nombre, ocupado); tolera
+            -- también una tabla por compatibilidad con otras versiones.
+            if type(n)=="table" then
+                n=n.name or n.id or n.item
+            end
+            if isFuel(n) then return i end
+            if type(occupied)=="string" and isFuel(occupied) then return i end
+        end
     end
     return nil
 end
