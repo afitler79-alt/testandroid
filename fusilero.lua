@@ -344,34 +344,12 @@ local function combat(mob)
     w=hand()
     if not w or not isWep(w) then return false end
 
-    -- CGS/NTGL dispara mediante el uso del objeto en la mano.
-    -- Primero se coloca al androide a distancia de interacción y después
-    -- hace clic derecho sobre el objetivo. attack(uuid) sería solo melee.
+    -- CGS/NTGL usa la interacción de la entidad para disparar y recargar.
+    -- useEntity mueve al androide hasta el objetivo y usa el arma equipada.
     local now=os.clock()
     if now-lastWeaponUse<WEAPON_USE_COOLDOWN then return true end
     lastWeaponUse=now
     attackStart=now
-
-    local self=android.getSelf()
-    if not self then return false end
-    local dx=mob.posX-self.posX
-    local dy=mob.posY-self.posY
-    local dz=mob.posZ-self.posZ
-    local distanceSq=dx*dx+dy*dy+dz*dz
-
-    if distanceSq>16 then
-        local moved,moveResult=pcall(android["goto"],mob.uuid)
-        if not moved or fail(moveResult) then
-            if os.clock()-lastAttackError>=5 then
-                local detail=type(moveResult)=="table" and moveResult[2] or moveResult
-                print("No puedo acercarme al objetivo: "..tostring(detail or "error API"))
-                lastAttackError=os.clock()
-            end
-            return false
-        end
-        return true
-    end
-
     local ok,result=pcall(android.useEntity,mob.uuid)
     if not ok or fail(result) then
         if os.clock()-lastAttackError>=5 then
