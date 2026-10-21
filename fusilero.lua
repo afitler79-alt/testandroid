@@ -1,8 +1,9 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v9.1 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- ROL FUSILERO v10 (CC:Androids 1.3.0 / Forge 1.20.1)
 -- NTGL 3.1.2: left click=disparo, right click=recarga
--- Stash: 11 ranuras (0-10). Redstone se busca en cualquier ranura.
--- Munición: en la HOTBAR del android (no en la stash).
+-- Stash: 11 ranuras (0-10). getSlotInfo NO devuelve nombres.
+-- Fuel: FUEL_SLOT fijo, verificado con equipSlot+getHandInfo.
+-- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -10,7 +11,8 @@ local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 6
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 5
-local STASH_SIZE = 11          -- Ranuras: 0-10
+local STASH_SIZE = 11
+local FUEL_SLOT = 0
 local PICKUP_SCAN_DELAY = 0.8
 local HEAL_AT = 12
 local HEAL_RETRY_DELAY = 8
@@ -166,14 +168,18 @@ local function apiFailed(value)
     return type(value) == "table" and value[1] == true
 end
 
-local function slotInfo(index)
-    local ok, name = pcall(android.getSlotInfo, index)
-    if not ok then return nil, false end
-    local normalized = type(name) == "string" and name:lower() or ""
-    local occupied = normalized ~= ""
-        and normalized ~= "minecraft:air"
-        and normalized ~= "air"
-    return name, occupied
+-- getSlotInfo en esta build devuelve:
+--   "Empty" (string) o false → vacía
+--   true (boolean)           → ocupada (SIN nombre)
+-- Por eso solo se usa para saber si hay algo o no.
+local function slotOccupied(index)
+    local ok, result = pcall(android.getSlotInfo, index)
+    if not ok then return false end
+    if type(result) == "boolean" then return result end
+    if type(result) == "string" then
+        return result ~= "" and result ~= "Empty" and result ~= "minecraft:air" and result ~= "air"
+    end
+    return false
 end
 
 local function handInfo()
@@ -199,12 +205,10 @@ local function isWeapon(name)
     return matchesList(name, ALL_WEAPONS)
 end
 
--- BUSCA RANURA VACÍA (0 a 10)
 local function findEmptySlot(exclude)
     for index = 0, STASH_SIZE - 1 do
         if index ~= exclude then
-            local _, occupied = slotInfo(index)
-            if not occupied then return index end
+            if not slotOccupied(index) then return index end
         end
     end
     return nil
@@ -213,29 +217,7 @@ end
 local function findAnyEmptySlot(excludeA, excludeB)
     for index = 0, STASH_SIZE - 1 do
         if index ~= excludeA and index ~= excludeB then
-            local _, occupied = slotInfo(index)
-            if not occupied then return index end
-        end
-    end
-    return nil
-end
-
-local function findSlotWithItem(list)
-    for index = 0, STASH_SIZE - 1 do
-        local name, occupied = slotInfo(index)
-        if occupied and matchesList(name, list) then
-            return index
-        end
-    end
-    return nil
-end
-
--- BUSCA REDSTONE EN CUALQUIER RANURA (0-10)
-local function findRedstoneSlot()
-    for index = 0, STASH_SIZE - 1 do
-        local name, occupied = slotInfo(index)
-        if occupied and name and name:lower():find("redstone", 1, true) then
-            return index
+            if not slotOccupied(index) then return index end
         end
     end
     return nil
@@ -347,6 +329,60 @@ local function engage(mob)
 end
 
 -- ═══════════════════════════════════════════════════════════════
+-- REPOSTAJE (equipSlot + getHandInfo para verificar redstone)
+-- ═══════════════════════════════════════════════════════════════
+local function refuelWithoutDroppingWeapon()
+    -- Verificar que FUEL_SLOT está ocupada
+    if not slotOccupied(FUEL_SLOT) then
+        return false, "r" .. FUEL_SLOT .. " vacía (pon redstone ahí)"
+    end
+
+    local heldName = handInfo()
+    local tempSlot
+
+    if heldName then
+        tempSlot = findEmptySlot(FUEL_SLOT)
+        if not tempSlot then
+            return false, "sin ranura libre para guardar el arma"
+        end
+        local ok, err = pcall(android.storeItem, tempSlot)
+        if not ok or apiFailed(err) then
+            return false, "no se guardó el arma"
+        end
+    end
+
+    -- Equipar FUEL_SLOT
+    local ok, result = pcall(android.equipSlot, FUEL_SLOT)
+    if not ok or apiFailed(result) then
+        if tempSlot then pcall(android.equipSlot, tempSlot) end
+        return false, "no se equipó r" .. FUEL_SLOT
+    end
+
+    -- Verificar con getHandInfo que SÍ es redstone
+    local name = handInfo()
+    if not name or not name:lower():find("redstone", 1, true) then
+        -- No es redstone, devolver
+        if name then pcall(android.storeItem, FUEL_SLOT) end
+        if tempSlot then pcall(android.equipSlot, tempSlot) end
+        return false, "r" .. FUEL_SLOT .. " no tiene redstone (tiene: " .. tostring(name or "nada") .. ")"
+    end
+
+    -- Refuel
+    local before = android.fuelLevel()
+    local called, fuelResult = pcall(android.refuel, 1)
+    local after = android.fuelLevel()
+
+    -- Devolver lo que quede en la mano
+    local remaining = handInfo()
+    if remaining then pcall(android.storeItem, FUEL_SLOT) end
+    if tempSlot then pcall(android.equipSlot, tempSlot) end
+
+    if not called then return false, tostring(fuelResult) end
+    if after > before then return true, "fuel → " .. tostring(after) end
+    return false, "refuel no aumentó el nivel"
+end
+
+-- ═══════════════════════════════════════════════════════════════
 -- SUPERVIVENCIA
 -- ═══════════════════════════════════════════════════════════════
 local function tryHeal()
@@ -363,15 +399,27 @@ local function tryHeal()
         if not ok or apiFailed(result) then return end
     end
 
-    local targetSlot = findSlotWithItem(POTION_ITEMS)
-    if not targetSlot then targetSlot = findSlotWithItem(FOOD_ITEMS) end
-
-    if targetSlot then
-        pcall(android.equipSlot, targetSlot)
-        print("Comida/poción equipada. HP=" .. tostring(self.health))
+    -- Buscar comida/poción: equipar cada ranura y verificar
+    local found = false
+    for index = 0, STASH_SIZE - 1 do
+        if index == FUEL_SLOT then break end
+        if slotOccupied(index) then
+            local ok, eq = pcall(android.equipSlot, index)
+            if ok and not apiFailed(eq) then
+                local name = handInfo()
+                if name and (matchesList(name, POTION_ITEMS) or matchesList(name, FOOD_ITEMS)) then
+                    print("Comida/poción equipada (r" .. index .. "). HP=" .. tostring(self.health))
+                    found = true
+                    break
+                end
+                -- No es comida, devolver
+                pcall(android.storeItem, index)
+            end
+        end
     end
 
-    if tempSlot then
+    if not found and tempSlot then
+        -- No se encontró comida, restaurar arma
         local held = handInfo()
         if not held then
             pcall(android.equipSlot, tempSlot)
@@ -405,7 +453,7 @@ local function collectRoleDrop(drop)
         return true
     end
 
-    local destination = findAnyEmptySlot()
+    local destination = findAnyEmptySlot(FUEL_SLOT)
     if not destination then return false end
 
     local stored, err = pcall(android.storeItem, destination)
@@ -422,74 +470,19 @@ local function collectRoleDrops()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- REPOSTAJE (busca redstone en cualquier ranura 0-10)
--- ═══════════════════════════════════════════════════════════════
-local function refuelWithoutDroppingWeapon()
-    local fuelSlot = findRedstoneSlot()
-    if not fuelSlot then
-        return false, "sin redstone en ninguna ranura"
-    end
-
-    local heldName = handInfo()
-    local tempSlot
-
-    if heldName then
-        tempSlot = findEmptySlot(fuelSlot)
-        if not tempSlot then
-            return false, "sin ranura libre para guardar el arma"
-        end
-        local ok, err = pcall(android.storeItem, tempSlot)
-        if not ok or apiFailed(err) then
-            return false, "no se guardó el arma"
-        end
-    end
-
-    local ok, result = pcall(android.equipSlot, fuelSlot)
-    if not ok or apiFailed(result) then
-        if tempSlot then pcall(android.equipSlot, tempSlot) end
-        return false, "no se equipó el combustible"
-    end
-
-    local before = android.fuelLevel()
-    local called, fuelResult = pcall(android.refuel, 1)
-    local after = android.fuelLevel()
-
-    local held = handInfo()
-    if held then pcall(android.storeItem, fuelSlot) end
-    if tempSlot then pcall(android.equipSlot, tempSlot) end
-
-    if not called then return false, tostring(fuelResult) end
-    if after > before then return true, "fuel → " .. tostring(after) end
-    return false, "no aumentó"
-end
-
--- ═══════════════════════════════════════════════════════════════
 -- INFORME
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v9.1 ═══")
+    print("═══ Fusilero v10 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon and isWeapon(weapon) then
         print("→ NTGL: left=disparo, right=recarga")
     elseif weapon then
-        print("⚠ No es arma CGS/CBC")
+        print("⚠ No es arma CGS/CBC (no disparará)")
     end
-
-    print("--- Stash (0-" .. tostring(STASH_SIZE-1) .. ") ---")
-    for index = 0, STASH_SIZE - 1 do
-        local name, occupied = slotInfo(index)
-        if occupied then
-            local label = "r" .. index .. ": " .. tostring(name)
-            if name:lower():find("redstone", 1, true) then label = label .. " [FUEL]"
-            elseif matchesList(name, ALL_AMMO) then label = label .. " [AMMO]"
-            elseif isWeapon(name) then label = label .. " [GUN]"
-            end
-            print(label)
-        else
-            print("r" .. index .. ": [vacia]")
-        end
-    end
+    print("Fuel slot: r" .. FUEL_SLOT)
+    print("Stash: " .. STASH_SIZE .. " ranuras (0-" .. tostring(STASH_SIZE-1) .. ")")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -563,7 +556,7 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v9.1 | " .. state.mode
+                        unitName .. " | v10 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
@@ -571,8 +564,8 @@ local function listenForCommands(unit, state, owners)
                 elseif command == "dump" then
                     local lines = { "MANO: " .. tostring(handInfo() or "vacia") }
                     for i = 0, STASH_SIZE - 1 do
-                        local n, o = slotInfo(i)
-                        lines[#lines + 1] = "r" .. i .. ": " .. (o and tostring(n) or "[vacia]")
+                        local occ = slotOccupied(i)
+                        lines[#lines + 1] = "r" .. i .. ": " .. (occ and "[ocupada]" or "[vacia]")
                     end
                     pcall(android.sendChatMessage, "INV: " .. table.concat(lines, " | "))
                 end
@@ -715,7 +708,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v9.1 detenido.")
+    print("Fusilero v10 detenido.")
 end
 
 local ok, err = pcall(main)
