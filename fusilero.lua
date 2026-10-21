@@ -1,9 +1,6 @@
--- FUSILERO v18.1 FINAL
+-- FUSILERO v18.3
 -- CC:Androids 1.3.0 / NTGL 3.1.2
--- Ranuras fijas. findFreeSlot usa getSlotInfo (NO equipa).
--- Solo equipa en refuel o al arrancar.
-
-local WEAPON_SLOT = 1
+-- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
 
 local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 8
@@ -35,6 +32,19 @@ local WEAPON_NAMES = {
     "ballistic pistol","ballistic carbine","ballistic shotgun",
     "ballistic sniper","ballistic gatling","ballistic minigun",
     "ballistic grenade launcher","ballistic cannon",
+}
+-- Nombres que puede devolver getSlotInfo cuando el idioma del juego no
+-- muestra el ID cgs:item. Se revisan solo después de descartar munición.
+local CGS_WEAPON_ALIASES = {
+    { "cgs:revolver", "revolver", "revólver" },
+    { "cgs:shotgun", "shotgun", "escopeta" },
+    { "cgs:gatling", "gatling" },
+    { "cgs:nailgun", "nailgun", "clavadora" },
+    { "cgs:flintlock", "flintlock", "pistola de chispa", "pistola de pedernal" },
+    { "cgs:blazegun", "blazegun" },
+    { "cgs:launcher", "launcher", "lanzador" },
+    { "cgs:frag_grenade", "frag grenade", "granada de fragmentación", "granada de fragmentacion" },
+    { "cgs:pneumatic_hammer", "pneumatic hammer", "martillo neumático", "martillo neumatico" },
 }
 local AMMO_IDS = {
     "cgs:flintlock_bullet","cgs:revolver_round","cgs:shotgun_round",
@@ -118,7 +128,12 @@ local function isWep(n)
         if l:find(i,1,true) then return true end
     end
     for _,i in ipairs(WEAPON_NAMES) do
-        if l==i then return true end
+        if l:find(i,1,true) then return true end
+    end
+    for _,aliases in ipairs(CGS_WEAPON_ALIASES) do
+        for j=2,#aliases do
+            if l:find(aliases[j],1,true) then return true end
+        end
     end
     return false
 end
@@ -174,11 +189,16 @@ local function findFuelSlot()
     return nil, table.concat(found, ", ")
 end
 
-local WEAPON_PRIORITY = {
-    "cgs:revolver", "cgs:shotgun", "cgs:gatling", "cgs:nailgun",
-    "cgs:flintlock", "cgs:blazegun", "cgs:launcher",
-    "cgs:frag_grenade", "cgs:pneumatic_hammer",
-}
+local function cgsWeaponRank(name)
+    if type(name)~="string" or isAmmo(name) then return nil end
+    local lower=name:lower()
+    for rank,aliases in ipairs(CGS_WEAPON_ALIASES) do
+        for _,alias in ipairs(aliases) do
+            if lower:find(alias,1,true) then return rank end
+        end
+    end
+    return nil
+end
 
 -- Elige un arma CGS del inventario; la preferencia es estable y no depende
 -- de que esté colocada en una ranura concreta.
@@ -186,12 +206,9 @@ local function findWeaponSlot()
     local bestSlot, bestRank
     for i=0,STASH_SIZE-1 do
         local ok,n = pcall(android.getSlotInfo,i)
-        if ok and type(n)=="string" and n:lower():find("cgs:",1,true) and isWep(n) then
-            local rank = #WEAPON_PRIORITY + 1
-            local lower = n:lower()
-            for j,id in ipairs(WEAPON_PRIORITY) do
-                if lower:find(id,1,true) then rank=j break end
-            end
+        if ok and type(n)=="table" then n=n.name or n.id or n.item end
+        local rank = ok and cgsWeaponRank(n) or nil
+        if rank then
             if not bestRank or rank<bestRank then
                 bestSlot,bestRank=i,rank
             end
@@ -204,10 +221,10 @@ end
 local function equipWeapon()
     local h = hand()
     local weaponSlot = findWeaponSlot()
-    if h and isWep(h) and (h:lower():find("cgs:",1,true)==nil or weaponSlot==nil) then
+    if h and isWep(h) and cgsWeaponRank(h)==nil and weaponSlot==nil then
         return true
     end
-    if h and isWep(h) and h:lower():find("cgs:",1,true) then return true end
+    if h and cgsWeaponRank(h) then return true end
     if weaponSlot == nil then return false end
 
     local tmp = nil
@@ -314,7 +331,7 @@ local function combat(mob)
     local d=dx*dx+dy*dy+dz*dz
 
     local w = hand()
-    if not w or not isWep(w) or (w:lower():find("cgs:",1,true)==nil and findWeaponSlot()~=nil) then
+    if not w or not isWep(w) or (cgsWeaponRank(w)==nil and findWeaponSlot()~=nil) then
         equipWeapon()
         if d > MIN_RANGE_SQ then
             android.moveTo({x=mob.posX,y=mob.posY,z=mob.posZ})
@@ -423,7 +440,7 @@ local function main()
         return
     end
 
-    print("=== v18.2 ===")
+    print("=== v18.3 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
@@ -482,7 +499,7 @@ local function main()
 
                 if not inCombat and now-lastWep>=15 then
                     local w=hand()
-                    if not w or not isWep(w) or (w:lower():find("cgs:",1,true)==nil and findWeaponSlot()~=nil) then
+                    if not w or not isWep(w) or (cgsWeaponRank(w)==nil and findWeaponSlot()~=nil) then
                         equipWeapon()
                     end
                     lastWep=now
