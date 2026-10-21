@@ -1,4 +1,4 @@
--- FUSILERO v18.7
+-- FUSILERO v18.8
 -- CC:Androids 1.3.0 / NTGL 3.1.2
 -- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
 
@@ -11,6 +11,7 @@ local STASH_SIZE = 9
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
 local ATTACK_TIMEOUT = 45
+local WEAPON_USE_COOLDOWN = 0.8
 local OWNERS_FILE = "owners.cfg"
 
 local WEAPONS = {
@@ -85,11 +86,11 @@ local TARGETS = {
 }
 
 local lastTarget = nil
-local preparedTarget = nil
 local inCombat = false
 local lastCombatEnd = 0
 local attackStart = 0
 local lastAttackError = 0
+local lastWeaponUse = 0
 
 local function fail(v)
     return type(v)=="table" and v[1]==true
@@ -343,29 +344,18 @@ local function combat(mob)
     w=hand()
     if not w or not isWep(w) then return false end
 
-    -- NTGL necesita la interacción con la entidad para el uso/recarga del arma.
-    -- Se ejecuta una sola vez por objetivo y se deja terminar antes de atacar.
-    if preparedTarget~=mob.uuid then
-        local ok,result=pcall(android.useEntity,mob.uuid)
-        preparedTarget=mob.uuid
-        if not ok or fail(result) then
-            if os.clock()-lastAttackError>=5 then
-                local detail=type(result)=="table" and result[2] or result
-                print("Interacción NTGL fallida: "..tostring(detail or "error API"))
-                lastAttackError=os.clock()
-            end
-        end
-        return true
-    end
-
-    -- attack() gestiona el acercamiento y el ataque; se inicia después de que
-    -- useEntity haya terminado su tarea asíncrona.
-    attackStart=os.clock()
-    local ok,result=pcall(android.attack,mob.uuid)
+    -- Repite la acción del arma NTGL mientras el objetivo siga presente.
+    -- useEntity también se ocupa de acercarse; se respeta el cooldown y se
+    -- deja terminar cada tarea antes de iniciar la siguiente interacción.
+    local now=os.clock()
+    if now-lastWeaponUse<WEAPON_USE_COOLDOWN then return true end
+    lastWeaponUse=now
+    attackStart=now
+    local ok,result=pcall(android.useEntity,mob.uuid)
     if not ok or fail(result) then
         if os.clock()-lastAttackError>=5 then
             local detail=type(result)=="table" and result[2] or result
-            print("Ataque fallido: "..tostring(detail or "error API"))
+            print("Disparo/recarga NTGL fallido: "..tostring(detail or "error API"))
             lastAttackError=os.clock()
         end
         return false
@@ -459,7 +449,7 @@ local function main()
 
     local initialInventory=scanInventory()
     state.inventoryStatus=inventorySummary(initialInventory)
-    print("=== v18.7 ===")
+    print("=== v18.8 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
@@ -518,7 +508,8 @@ local function main()
                     lastStatusReport=now
                 end
 
-                if task=="attacking" and lastTarget then
+                if (task=="attacking" or task=="usingEntity"
+                    or task=="movingToEntity" or task=="movintToEntity") and lastTarget then
                     if now-attackStart>ATTACK_TIMEOUT then
                         android.cancelTask()
                         task="idle"
