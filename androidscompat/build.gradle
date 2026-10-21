@@ -49,6 +49,9 @@ repositories {
 
 dependencies {
     minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
+    // Jade is optional at runtime; this local API jar is only needed to compile
+    // the optional tooltip integration for the installed Minecraft instance.
+    compileOnly files('C:/Users/Usuario/curseforge/minecraft/Instances/MINAS CRAFTEO 2026 (1)/mods/Jade-1.20.1-Forge-11.13.3.jar')
 }
 
 tasks.withType(JavaCompile).configureEach {

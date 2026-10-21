@@ -6,7 +6,9 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.network.chat.Component;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.Entity;
@@ -24,16 +26,25 @@ import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ArmorItem;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.AABB;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.ServerChatEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraft.world.InteractionResult;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.ModList;
+import net.minecraftforge.common.capabilities.ForgeCapabilities;
+import net.minecraftforge.items.IItemHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.joml.Vector3f;
@@ -64,6 +75,14 @@ public final class AndroidsCompatMod {
 
     private static final String ANDROID_BASE_CLASS =
             "com.thunderbear06.entity.android.BaseAndroidEntity";
+    private static final String COMMAND_ANDROID_CLASS =
+            "com.thunderbear06.entity.android.CommandAndroidEntity";
+    private static final String ANDROID_FRAME_CLASS =
+            "com.thunderbear06.entity.android.frame.AndroidFrame";
+    private static final String DIAMOND_COMMAND_FRAME_TAG =
+            "androidscompat_diamond_command_frame";
+    private static final String SKIN_COLOR_TAG = "androidscompat_skin_color";
+    private static final int DEFAULT_SKIN_COLOR = 0xFFFFFF;
     private static final String NTGL_WEAPON_CLASS =
             "com.nukateam.ntgl.common.foundation.item.interfaces.IWeapon";
     private static final String NTGL_GOAL_CLASS =
@@ -79,6 +98,7 @@ public final class AndroidsCompatMod {
     private static final String NTGL_AMMO_CONTEXT_CLASS =
             "com.nukateam.ntgl.common.util.helpers.context.IAmmoContext";
     private static final String RELOAD_CHAT = "!androidscompat reload";
+    private static final String HELP_CHAT = "!help list";
     private static final String AUTOPILOT_CHAT_PREFIX = "!androidscompat autopilot";
     private static final String ORDER_CHAT_PREFIX = "!androidscompat order";
     private static final String CAPTURE_CHAT = "!androidscompat capture";
@@ -93,15 +113,26 @@ public final class AndroidsCompatMod {
     private static final double TARGET_RANGE = 32.0D;
     private static final int CHECK_EVERY_TICKS = 5;
     private static final int DIRECT_GROUND_FIRE_COOLDOWN = 10;
+    private static final int MAX_SAFE_DROP = 4;
+    private static final int EDGE_HOLD_TICKS = 12;
+    private static final int SUPPORT_SCAN_DEPTH = 16;
     private static final long XP_PER_LEVEL_SQUARE = 100L;
     private static final String XP_TAG = "androidscompat_xp";
     private static final String LEVEL_TAG = "androidscompat_level";
     private static final String BASE_SPEED_TAG = "androidscompat_base_speed";
     private static final String BASE_HEALTH_TAG = "androidscompat_base_health";
     private static final String BASE_FOLLOW_TAG = "androidscompat_base_follow";
+    /** 25 hearts: the physical Command Android cannot exceed this value. */
+    private static final double COMMAND_ANDROID_MAX_HEALTH = 50.0D;
     private static final String SQUAD_TAG = "androidscompat_squad";
     private static final String ORDER_TAG = "androidscompat_order";
     private static final String ORDER_TARGET_TAG = "androidscompat_order_target";
+    /** Explicit server-side fire gate, independent of the Lua process. */
+    private static final String COMBAT_ENABLED_TAG = "androidscompat_combat_enabled";
+    private static final String GROUND_HOME_X_TAG = "androidscompat_ground_home_x";
+    private static final String GROUND_HOME_Y_TAG = "androidscompat_ground_home_y";
+    private static final String GROUND_HOME_Z_TAG = "androidscompat_ground_home_z";
+    private static final String COMMANDER_TAG = "androidscompat_commander";
     private static final String OWNER_TAG = "androidscompat_owner";
     private static final String AIR_ROLE_TAG = "androidscompat_air_role";
     private static final String SPY_TAG = "androidscompat_spy";
@@ -122,6 +153,10 @@ public final class AndroidsCompatMod {
     };
     private static final double AIRCRAFT_TARGET_RANGE = 64.0D;
     private static final int AIRCRAFT_FIRE_COOLDOWN = 15;
+    private static final int COMMANDER_INTERVAL_TICKS = 20;
+    private static final double COMMANDER_SCAN_RANGE = 48.0D;
+    private static final float COMMANDER_RETREAT_HEALTH = 6.0F;
+    private static boolean commanderEnabled = true;
 
     private enum AircraftRole {
         COMBAT,
@@ -159,10 +194,216 @@ public final class AndroidsCompatMod {
     private static final Map<UUID, AircraftNavigation> aircraftNavigation = new HashMap<>();
     private static final Map<UUID, Boolean> aircraftControlLogged = new HashMap<>();
     private static final Map<UUID, Integer> lastLoggedLevel = new HashMap<>();
+    private static final Map<UUID, Integer> edgeHoldTicks = new HashMap<>();
 
     public AndroidsCompatMod() {
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
+        SkinColorNetwork.init();
         LOGGER.info("CC:Androids compatibility loaded; NTGL weapons use server-side targeting");
+    }
+
+    @SubscribeEvent
+    public void onAndroidDyed(PlayerInteractEvent.EntityInteract event) {
+        if (event.getEntity().level().isClientSide
+                || !(event.getTarget() instanceof Mob android)
+                || !isAndroid(android)) {
+            return;
+        }
+        int color = dyeColor(event.getItemStack());
+        if (color < 0) {
+            return;
+        }
+        android.getPersistentData().putInt(SKIN_COLOR_TAG, color);
+        consumeOne(event.getEntity(), event.getHand());
+        SkinColorNetwork.sendToTracking(android, color);
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        event.setCanceled(true);
+    }
+
+    @SubscribeEvent
+    public void onAndroidStartTracking(PlayerEvent.StartTracking event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)
+                || !(event.getTarget() instanceof Mob android) || !isAndroid(android)) {
+            return;
+        }
+        int color = android.getPersistentData().contains(SKIN_COLOR_TAG)
+                ? android.getPersistentData().getInt(SKIN_COLOR_TAG)
+                : DEFAULT_SKIN_COLOR;
+        SkinColorNetwork.sendToPlayer(player, android, color);
+    }
+
+    /**
+     * CC:Androids normally accepts only iron/gold plates and reserves the
+     * Command Android for a command-block CPU.  For this pack, diamonds are
+     * the command plates: ten diamonds plus the normal frame construction and
+     * an Android CPU produce the command computer.
+     */
+    @SubscribeEvent
+    public void onFrameConstruction(PlayerInteractEvent.EntityInteract event) {
+        if (event.getEntity().level().isClientSide
+                || !(event.getTarget() instanceof Mob frame)
+                || !isAndroidFrame(frame)) {
+            return;
+        }
+
+        ItemStack held = event.getItemStack();
+        if (held.is(Items.DIAMOND) && frameIngotsNeeded(frame) > 0
+                && frameComponentsNeeded(frame) == 0) {
+            if (invokeDiamondPlates(frame)) {
+                frame.getPersistentData().putBoolean(DIAMOND_COMMAND_FRAME_TAG, true);
+                consumeOne(event.getEntity(), event.getHand());
+                event.setCancellationResult(InteractionResult.SUCCESS);
+                event.setCanceled(true);
+            }
+            return;
+        }
+
+        if (isAndroidCpu(held) && frameComponentsNeeded(frame) == 0
+                && frameIngotsNeeded(frame) == 0 && frameHasCore(frame)
+                && frame.getPersistentData().getBoolean(DIAMOND_COMMAND_FRAME_TAG)) {
+            if (finishCommandFrame(frame, held)) {
+                consumeOne(event.getEntity(), event.getHand());
+                event.setCancellationResult(InteractionResult.SUCCESS);
+                event.setCanceled(true);
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END || !commanderEnabled
+                || event.getServer().getTickCount() % COMMANDER_INTERVAL_TICKS != 0) {
+            return;
+        }
+        AABB worldBounds = new AABB(
+                -30_000_000.0D, -30_000_000.0D, -30_000_000.0D,
+                30_000_000.0D, 30_000_000.0D, 30_000_000.0D);
+        for (ServerLevel level : event.getServer().getAllLevels()) {
+            List<Mob> commanders = level.getEntitiesOfClass(
+                    Mob.class, worldBounds, AndroidsCompatMod::isCommandAndroid);
+            if (commanders.isEmpty()) {
+                continue;
+            }
+            List<Mob> androids = level.getEntitiesOfClass(
+                    Mob.class, worldBounds, AndroidsCompatMod::isAndroid);
+            for (Mob android : androids) {
+                Mob commander = commanders.stream()
+                        .filter(candidate -> candidate != android)
+                        .min(Comparator.comparingDouble(
+                                candidate -> candidate.distanceToSqr(android)))
+                        .orElse(null);
+                if (commander != null) {
+                    commandTroop(commander, android, level.getGameTime());
+                }
+            }
+        }
+    }
+
+    private static void commandTroop(Mob commander, Mob android, long gameTime) {
+        if (commander.distanceToSqr(android)
+                > COMMANDER_SCAN_RANGE * COMMANDER_SCAN_RANGE) {
+            return;
+        }
+        android.getPersistentData().putBoolean(COMMANDER_TAG, false);
+
+        if (isSpy(android) || android.getPersistentData().hasUUID(CAPTURED_BY_TAG)
+                || android.getPersistentData().getBoolean(IMPRISONED_TAG)) {
+            return;
+        }
+
+        if (android.isPassenger() && isAircraft(android.getVehicle())) {
+            restoreAircraftRole(android, gameTime);
+            return;
+        }
+
+        rememberGroundHome(android);
+        String order = android.getPersistentData().getString(ORDER_TAG)
+                .toLowerCase(java.util.Locale.ROOT);
+
+        if (android.getHealth() <= COMMANDER_RETREAT_HEALTH) {
+            if (!"return".equals(order)) {
+                android.getPersistentData().putString(ORDER_TAG, "return");
+                setCombatEnabled(android, false);
+            }
+            return;
+        }
+
+        // Explicit player orders always win over the commander.
+        if ("hold".equals(order) || "return".equals(order)) {
+            return;
+        }
+
+        if (order.isEmpty()) {
+            android.getPersistentData().putString(ORDER_TAG, "patrol");
+            order = "patrol";
+        }
+        setCombatEnabled(android, true);
+
+        LivingEntity enemy = findNearestEnemy(android);
+        if (enemy != null) {
+            android.setTarget(enemy);
+            android.getNavigation().moveTo(enemy, 1.0D);
+            return;
+        }
+
+        android.setTarget(null);
+        if ("patrol".equals(order) || "guard".equals(order)) {
+            commanderPatrol(android, gameTime);
+        }
+    }
+
+    private static void rememberGroundHome(Mob android) {
+        var data = android.getPersistentData();
+        if (!data.contains(GROUND_HOME_X_TAG)) {
+            data.putDouble(GROUND_HOME_X_TAG, android.getX());
+            data.putDouble(GROUND_HOME_Y_TAG, android.getY());
+            data.putDouble(GROUND_HOME_Z_TAG, android.getZ());
+        }
+    }
+
+    private static void commanderPatrol(Mob android, long gameTime) {
+        if (!android.getNavigation().isDone() && gameTime % 100L != 0L) {
+            return;
+        }
+        var data = android.getPersistentData();
+        double homeX = data.getDouble(GROUND_HOME_X_TAG);
+        double homeY = data.getDouble(GROUND_HOME_Y_TAG);
+        double homeZ = data.getDouble(GROUND_HOME_Z_TAG);
+        int phase = Math.floorMod((int) (gameTime / 100L)
+                + android.getUUID().hashCode(), 4);
+        double radius = 8.0D;
+        double x = homeX + (phase == 0 ? radius : phase == 2 ? -radius : 0.0D);
+        double z = homeZ + (phase == 1 ? radius : phase == 3 ? -radius : 0.0D);
+        android.getNavigation().moveTo(x, homeY, z, 1.0D);
+    }
+
+    private static void restoreAircraftRole(Mob android, long gameTime) {
+        AircraftRole role = aircraftRoles.get(android.getUUID());
+        if (role == null) {
+            String stored = android.getPersistentData().getString(AIR_ROLE_TAG);
+            try {
+                role = AircraftRole.valueOf(stored.toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                return;
+            }
+            aircraftRoles.put(android.getUUID(), role);
+        }
+        Entity vehicle = android.getVehicle();
+        aircraftNavigation.computeIfAbsent(android.getUUID(), key ->
+                new AircraftNavigation(vehicle.position(), gameTime));
+    }
+
+    private static int setCommander(CommandSourceStack source, boolean enabled) {
+        commanderEnabled = enabled;
+        source.sendSuccess(() -> Component.literal(
+                "Comandante IA: " + (enabled ? "activado" : "desactivado")), true);
+        return 1;
+    }
+
+    private static int commanderStatus(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal(
+                "Comandante IA: " + (commanderEnabled ? "activo" : "inactivo")), false);
+        return 1;
     }
 
     @SubscribeEvent
@@ -179,6 +420,16 @@ public final class AndroidsCompatMod {
                         .executes(context -> statsNearest(context.getSource())))
                 .then(Commands.literal("compat")
                         .executes(context -> compatibilityStatus(context.getSource())))
+                .then(Commands.literal("commander")
+                        .then(Commands.literal("on")
+                                .executes(context -> setCommander(
+                                        context.getSource(), true)))
+                        .then(Commands.literal("off")
+                                .executes(context -> setCommander(
+                                        context.getSource(), false)))
+                        .then(Commands.literal("status")
+                                .executes(context -> commanderStatus(
+                                        context.getSource()))))
                 .then(Commands.literal("squad")
                         .then(Commands.argument("name", StringArgumentType.word())
                                 .executes(context -> assignSquad(
@@ -232,6 +483,18 @@ public final class AndroidsCompatMod {
     @SubscribeEvent
     public void onServerChat(ServerChatEvent event) {
         String text = event.getRawText().trim();
+        if (handleHelpChat(event, text)) {
+            return;
+        }
+        if (handleCommanderChat(event, text)) {
+            return;
+        }
+        // Keep legacy !jarvis commands, but make hold/return/patrol also
+        // update the server-side fire gate.  Lua may be paused or delayed;
+        // firing must never depend on its local state alone.
+        if (handleJarvisCombatOrder(event, text)) {
+            return;
+        }
         if (handleAutopilotChat(event, text)) {
             return;
         }
@@ -261,6 +524,128 @@ public final class AndroidsCompatMod {
         if (android != null) {
             reloadAndroid(android);
         }
+    }
+
+    private boolean handleHelpChat(ServerChatEvent event, String text) {
+        if (!HELP_CHAT.equalsIgnoreCase(text) && !"!help".equalsIgnoreCase(text)) {
+            return false;
+        }
+        event.setCanceled(true);
+        ServerPlayer player = event.getPlayer();
+        String[] lines = {
+                "=== ANDROIDS COMPAT: AYUDA ===",
+                "!help list | muestra esta ayuda",
+                "",
+                "TIERRA / JARVIS",
+                "!jarvis <all|Android> hold | detener y mantener posicion",
+                "!jarvis <all|Android> resume | reanudar patrulla",
+                "!jarvis <all|Android> patrol | patrullar y combatir",
+                "!jarvis <all|Android> return | volver a la base",
+                "!jarvis <all|Android> reload | recargar arma NTGL",
+                "!jarvis <all|Android> test | probar deteccion/disparo",
+                "!jarvis <all|Android> status | estado, vida, combustible y arma",
+                "COMMAND ANDROID",
+                "Construccion: Frame + 8 Components + 10 diamantes + Reactor + Android CPU",
+                "El Command Android fisico dirige Androids cercanos y tiene max. 25 corazones",
+                "",
+                "AVIACION",
+                "!avion <all|Android> mount | montar y activar rol aereo",
+                "!avion <all|Android> patrol | patrulla aerea",
+                "!avion <all|Android> follow <jugador> | seguir jugador",
+                "!avion <all|Android> return | regresar al punto de salida",
+                "!avion <all|Android> hold | mantener posicion",
+                "!avion <all|Android> guard | orden de guardia",
+                "!avion <all|Android> rescue | acudir a retenidos",
+                "!avion <all|Android> logistics | coordinar logistica",
+                "!avion <all|Android> capture | capturar objetivo cercano",
+                "!avion <all|Android> imprison | encarcelar objetivo cercano",
+                "!avion <all|Android> release | liberar retenido",
+                "!avion <all|Android> status | estado del avion",
+                "",
+                "ESPIONAJE",
+                "!espia <all|Android> hide | activar modo encubierto",
+                "!espia <all|Android> show | desactivar modo encubierto",
+                "!espia <all|Android> report | pedir informe de inteligencia",
+                "!espia <all|Android> follow <jugador> | infiltrar siguiendo",
+                "!espia <all|Android> guard|patrol|return|hold|rescue|logistics",
+                "",
+                "COMANDOS DEL MOD (requieren permisos de operador)",
+                "/androidscompat compat | mods compatibles detectados",
+                "/androidscompat stats | nivel, XP, precision y velocidad",
+                "/androidscompat reload | recarga del Android cercano",
+                "/androidscompat squad <nombre> | asignar escuadra",
+                "/androidscompat order <orden> [objetivo] | ordenar Android cercano",
+                "/androidscompat order all <orden> [objetivo] | ordenar todos",
+                "ordenes: hold, patrol, guard, follow, rescue, logistics, return",
+                "/androidscompat mode combat|bomber|transport | asignar avion",
+                "/androidscompat mount | montar avion asignado",
+                "/androidscompat dismount | desmontar avion",
+                "/androidscompat spy on|off | activar/desactivar espia",
+                "/androidscompat spy cover <nombre> | nombre de cobertura",
+                "/androidscompat intel | informe de inteligencia",
+                "/androidscompat capture | capturar objetivo cercano",
+                "/androidscompat imprison | encarcelar objetivo cercano",
+                "/androidscompat release | liberar retenido cercano",
+                "/androidscompat commander on|off|status | comandante IA de tropas",
+                "!androidscompat commander on|off|status | alternativa por chat",
+                "R = el script puede solicitar recarga; Q = detener el script Lua"
+        };
+        for (String line : lines) {
+            player.sendSystemMessage(Component.literal(line));
+        }
+        return true;
+    }
+
+    private boolean handleJarvisCombatOrder(ServerChatEvent event, String text) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("^!jarvis\\s+(\\S+)\\s+(hold|return|resume|patrol)(?:\\s+.*)?$",
+                        java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(text);
+        if (!matcher.matches()) {
+            return false;
+        }
+
+        // Do not cancel the chat: the role Lua still needs to receive it and
+        // update its own patrol/return state.  The server gate is applied now.
+        ServerPlayer player = event.getPlayer();
+        ServerLevel level = (ServerLevel) player.level();
+        String requested = matcher.group(1);
+        String command = matcher.group(2).toLowerCase(java.util.Locale.ROOT);
+        String normalized = "resume".equals(command) ? "patrol" : command;
+        List<Mob> targets;
+        if ("all".equalsIgnoreCase(requested)) {
+            targets = level.getEntitiesOfClass(
+                    Mob.class, player.getBoundingBox().inflate(256.0D),
+                    AndroidsCompatMod::isAndroid);
+        } else {
+            Mob android = androidByUuid(level, requested);
+            if (android == null) {
+                android = nearestAndroid(player, 32.0D);
+            }
+            targets = android == null ? List.of() : List.of(android);
+        }
+        for (Mob android : targets) {
+            applyGroundOrAircraftOrder(android, normalized, "", player);
+        }
+        return true;
+    }
+
+    private boolean handleCommanderChat(ServerChatEvent event, String text) {
+        if (!text.toLowerCase(java.util.Locale.ROOT)
+                .matches("!androidscompat\\s+commander\\s+(on|off|status)")) {
+            return false;
+        }
+        event.setCanceled(true);
+        String command = text.substring(text.lastIndexOf(' ') + 1)
+                .toLowerCase(java.util.Locale.ROOT);
+        if ("on".equals(command)) {
+            commanderEnabled = true;
+        } else if ("off".equals(command)) {
+            commanderEnabled = false;
+        }
+        event.getPlayer().sendSystemMessage(Component.literal(
+                "Comandante IA: " + (commanderEnabled ? "ACTIVO" : "INACTIVO")));
+        return true;
     }
 
     /** Called by the independent aircraft Lua roles. */
@@ -357,6 +742,26 @@ public final class AndroidsCompatMod {
 
         ServerPlayer player = event.getPlayer();
         ServerLevel level = (ServerLevel) player.level();
+        if ("all".equalsIgnoreCase(parts[0])) {
+            if (parts.length < 2 || !isKnownOrder(parts[1].toLowerCase(
+                    java.util.Locale.ROOT))) {
+                player.sendSystemMessage(Component.literal(
+                        "Orden desconocida. Usa patrol, hold, return, guard o logistics."));
+                return true;
+            }
+            String command = parts[1].toLowerCase(java.util.Locale.ROOT);
+            String targetName = parts.length > 2 ? parts[2] : "";
+            int count = 0;
+            for (Mob candidate : level.getEntitiesOfClass(
+                    Mob.class, player.getBoundingBox().inflate(256.0D),
+                    AndroidsCompatMod::isAndroid)) {
+                applyGroundOrAircraftOrder(candidate, command, targetName, player);
+                count++;
+            }
+            player.sendSystemMessage(Component.literal(
+                    "Orden " + command + " aplicada a " + count + " Androids."));
+            return true;
+        }
         int commandIndex = 0;
         Mob android = null;
         if (parts.length > 1) {
@@ -396,6 +801,8 @@ public final class AndroidsCompatMod {
         }
 
         if (!android.isPassenger() || !isAircraft(android.getVehicle())) {
+            setCombatEnabled(android,
+                    !"hold".equals(command) && !"return".equals(command));
             android.getPersistentData().putString(ORDER_TAG, command);
             if (!targetName.isEmpty()) {
                 android.getPersistentData().putString(ORDER_TARGET_TAG, targetName);
@@ -418,6 +825,8 @@ public final class AndroidsCompatMod {
             return true;
         }
 
+        setCombatEnabled(android,
+                order != AircraftOrder.HOLD && order != AircraftOrder.RETURN);
         AircraftNavigation navigation = aircraftNavigation.computeIfAbsent(
                 android.getUUID(), key -> new AircraftNavigation(
                         controlledAndroid.getVehicle().position(),
@@ -635,6 +1044,30 @@ public final class AndroidsCompatMod {
         return android.getPersistentData().getBoolean(SPY_TAG);
     }
 
+    private static boolean combatEnabled(Mob android) {
+        // Old Androids have no tag and remain active by default.
+        if (!android.getPersistentData().contains(COMBAT_ENABLED_TAG)) {
+            return true;
+        }
+        return android.getPersistentData().getBoolean(COMBAT_ENABLED_TAG);
+    }
+
+    private static void setCombatEnabled(Mob android, boolean enabled) {
+        android.getPersistentData().putBoolean(COMBAT_ENABLED_TAG, enabled);
+        if (!enabled) {
+            android.setTarget(null);
+            android.getNavigation().stop();
+        }
+    }
+
+    private static boolean combatBlocked(Mob android) {
+        return !combatEnabled(android)
+                || isSpy(android)
+                || android.getPersistentData().hasUUID(CAPTURED_BY_TAG)
+                || android.getPersistentData().getBoolean(IMPRISONED_TAG)
+                || android.getHealth() <= 6.0F;
+    }
+
     private static void concealSpy(Mob spy) {
         if (!(spy.level() instanceof ServerLevel level)) {
             return;
@@ -762,6 +1195,9 @@ public final class AndroidsCompatMod {
 
     private static void applyGroundOrAircraftOrder(Mob android, String command,
                                                    String target, Player issuer) {
+        setCombatEnabled(android,
+                !"hold".equalsIgnoreCase(command)
+                        && !"return".equalsIgnoreCase(command));
         if (android.isPassenger() && isAircraft(android.getVehicle())) {
             try {
                 AircraftOrder aircraftOrder = AircraftOrder.valueOf(
@@ -802,6 +1238,16 @@ public final class AndroidsCompatMod {
         if ("hold".equals(order)) {
             android.setTarget(null);
             android.getNavigation().stop();
+            return;
+        }
+        if ("return".equals(order)) {
+            rememberGroundHome(android);
+            var data = android.getPersistentData();
+            android.setTarget(null);
+            android.getNavigation().moveTo(
+                    data.getDouble(GROUND_HOME_X_TAG),
+                    data.getDouble(GROUND_HOME_Y_TAG),
+                    data.getDouble(GROUND_HOME_Z_TAG), 1.1D);
             return;
         }
         ServerLevel level = (ServerLevel) android.level();
@@ -1058,6 +1504,82 @@ public final class AndroidsCompatMod {
         target.removeEffect(MobEffects.JUMP);
     }
 
+    /**
+     * Looks at the next one or two blocks before allowing a ground Android to
+     * continue. A small step is allowed; a void or a drop greater than the
+     * configured limit stops navigation and briefly holds the Android at the
+     * edge. This is server-side, so it protects every Lua role equally.
+     */
+    private static boolean safetyEdgeGuard(Mob android) {
+        if (android.isNoGravity() || !android.onGround()) {
+            return false;
+        }
+
+        UUID id = android.getUUID();
+        int hold = edgeHoldTicks.getOrDefault(id, 0);
+        if (hold > 0) {
+            edgeHoldTicks.put(id, hold - 1);
+            stopAtEdge(android);
+            return true;
+        }
+
+        if (!(android.level() instanceof ServerLevel level)) {
+            return false;
+        }
+        int currentDepth = supportDepth(level, android.getX(), android.getY(), android.getZ());
+        Vec3 motion = android.getDeltaMovement();
+        double horizontalSpeed = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
+        Vec3 direction = horizontalSpeed > 0.02D
+                ? new Vec3(motion.x, 0.0D, motion.z).normalize()
+                : new Vec3(android.getLookAngle().x, 0.0D, android.getLookAngle().z);
+        if (direction.lengthSqr() < 0.0001D) {
+            return false;
+        }
+        direction = direction.normalize();
+
+        double width = Math.max(0.65D, android.getBbWidth());
+        double[] lookAhead = {width * 0.9D, width * 1.6D};
+        for (double distance : lookAhead) {
+            double x = android.getX() + direction.x * distance;
+            double z = android.getZ() + direction.z * distance;
+            int nextDepth = supportDepth(level, x, android.getY(), z);
+            boolean voidOrDrop = nextDepth > MAX_SAFE_DROP
+                    && (currentDepth <= 1 || nextDepth > currentDepth + MAX_SAFE_DROP);
+            if (voidOrDrop) {
+                edgeHoldTicks.put(id, EDGE_HOLD_TICKS);
+                stopAtEdge(android);
+                LOGGER.debug("Safety stop for Android {}: ground drop {} blocks",
+                        id, nextDepth > SUPPORT_SCAN_DEPTH ? "void" : nextDepth);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int supportDepth(ServerLevel level, double x, double y, double z) {
+        int blockX = Mth.floor(x);
+        int blockZ = Mth.floor(z);
+        int startY = Mth.floor(y) - 1;
+        for (int depth = 0; depth <= SUPPORT_SCAN_DEPTH; depth++) {
+            int blockY = startY - depth;
+            if (blockY < level.getMinBuildHeight()) {
+                return SUPPORT_SCAN_DEPTH + 1;
+            }
+            BlockPos position = new BlockPos(blockX, blockY, blockZ);
+            if (!level.getBlockState(position).getCollisionShape(level, position).isEmpty()) {
+                return depth;
+            }
+        }
+        return SUPPORT_SCAN_DEPTH + 1;
+    }
+
+    private static void stopAtEdge(Mob android) {
+        android.getNavigation().stop();
+        android.setTarget(null);
+        Vec3 velocity = android.getDeltaMovement();
+        android.setDeltaMovement(0.0D, Math.min(0.0D, velocity.y), 0.0D);
+    }
+
     @SubscribeEvent
     public void onLivingTick(LivingEvent.LivingTickEvent event) {
         LivingEntity living = event.getEntity();
@@ -1072,17 +1594,28 @@ public final class AndroidsCompatMod {
             return;
         }
 
+        // The Command Android is a real, mortal entity from CC:Androids.
+        // It is the physical source of the squad commander AI.
+        if (isCommandAndroid(mob)) {
+            mob.setInvulnerable(false);
+            mob.getPersistentData().putBoolean(COMMANDER_TAG, true);
+        }
+
         // Aircraft control must run every passenger tick.  Immersive Aircraft
         // clears inputs when the passenger is not a Player, so doing this only
         // every few ticks makes the plane lose control and dive.
         controlAircraft(mob);
 
-        if (mob.tickCount % CHECK_EVERY_TICKS != 0) {
+        if (!mob.isPassenger() && safetyEdgeGuard(mob)) {
             return;
         }
 
-        updateProgression(mob);
-        equipArmorAndBackpack(mob);
+        // A ground role must never fire while it is sitting in an aircraft.
+        // Aircraft roles are handled exclusively by controlAircraft().
+        if (mob.isPassenger() && isAircraft(mob.getVehicle())) {
+            mob.setTarget(null);
+            return;
+        }
 
         if (isSpy(mob)) {
             concealSpy(mob);
@@ -1090,6 +1623,25 @@ public final class AndroidsCompatMod {
             mob.getNavigation().stop();
             return;
         }
+
+        // This gate must run every tick, not only on the slower equipment/
+        // targeting interval. Otherwise NTGL can reacquire and fire during
+        // the few ticks between two order checks.
+        applyGroundOrder(mob);
+        if (combatBlocked(mob)) {
+            mob.setTarget(null);
+            mob.getNavigation().stop();
+            return;
+        }
+
+        if (mob.tickCount % CHECK_EVERY_TICKS != 0) {
+            return;
+        }
+
+        updateProgression(mob);
+        equipArmorAndBackpack(mob);
+        syncBackpackSupplies(mob);
+        equipArmorAndBackpack(mob);
 
         moveNtglWeaponToMainHand(mob);
         ItemStack weapon = mob.getMainHandItem();
@@ -1156,7 +1708,14 @@ public final class AndroidsCompatMod {
         // transportador or by the explicit server command.
         AircraftRole role = aircraftRoles.get(android.getUUID());
         if (role == null) {
-            return;
+            String stored = android.getPersistentData().getString(AIR_ROLE_TAG);
+            try {
+                role = AircraftRole.valueOf(stored.toUpperCase(java.util.Locale.ROOT));
+                aircraftRoles.put(android.getUUID(), role);
+            } catch (IllegalArgumentException ignored) {
+                // No aircraft role: leave this passenger completely passive.
+                return;
+            }
         }
 
         // Immersive Aircraft is also the superclass of Man of Many Planes
@@ -1222,7 +1781,15 @@ public final class AndroidsCompatMod {
                     navigation.order == AircraftOrder.HOLD);
 
             long next = aircraftNextFire.getOrDefault(vehicle.getUUID(), 0L);
-            if (target != null && role != AircraftRole.TRANSPORT && tick >= next) {
+            boolean aircraftCombatAllowed = combatEnabled(android)
+                    && !isSpy(android)
+                    && !android.getPersistentData().hasUUID(CAPTURED_BY_TAG)
+                    && !android.getPersistentData().getBoolean(IMPRISONED_TAG)
+                    && android.getHealth() > 6.0F
+                    && navigation.order != AircraftOrder.HOLD
+                    && navigation.order != AircraftOrder.RETURN;
+            if (target != null && aircraftCombatAllowed
+                    && role != AircraftRole.TRANSPORT && tick >= next) {
                 fireAircraftWeapons(vehicle,
                         weaponDirection == null ? direction : weaponDirection, role);
                 aircraftNextFire.put(vehicle.getUUID(), tick + AIRCRAFT_FIRE_COOLDOWN);
@@ -1530,6 +2097,51 @@ public final class AndroidsCompatMod {
                 attributeValue(android, Attributes.MOVEMENT_SPEED));
     }
 
+    static boolean isAndroidEntity(Entity entity) {
+        return isAndroid(entity);
+    }
+
+    static void appendJadeStats(net.minecraft.nbt.CompoundTag tag, Entity entity) {
+        if (!(entity instanceof Mob android) || !isAndroid(android)) {
+            return;
+        }
+        net.minecraft.nbt.CompoundTag data = android.getPersistentData();
+        tag.putBoolean("android", true);
+        tag.putInt("level", getLevel(android));
+        tag.putLong("xp", experience(android));
+        tag.putDouble("accuracy", accuracyFor(android));
+        tag.putDouble("speed", attributeValue(android, Attributes.MOVEMENT_SPEED));
+        tag.putFloat("health", android.getHealth());
+        tag.putFloat("max_health", android.getMaxHealth());
+        tag.putString("squad", data.getString(SQUAD_TAG));
+        tag.putString("order", data.getString(ORDER_TAG));
+        tag.putString("air_role", data.getString(AIR_ROLE_TAG));
+        tag.putBoolean("commander", data.getBoolean(COMMANDER_TAG));
+        tag.putBoolean("command_android", isCommandAndroid(android));
+        tag.putBoolean("combat_enabled", combatEnabled(android));
+        tag.putBoolean("spy", isSpy(android));
+        tag.putString("cover", data.getString(SPY_COVER_TAG));
+        tag.putBoolean("captured", data.hasUUID(CAPTURED_BY_TAG));
+        tag.putBoolean("imprisoned", data.getBoolean(IMPRISONED_TAG));
+        tag.putInt("armor", countArmor(android));
+        ItemStack weapon = android.getMainHandItem();
+        if (!weapon.isEmpty()) {
+            var key = BuiltInRegistries.ITEM.getKey(weapon.getItem());
+            tag.putString("weapon", key == null ? weapon.getHoverName().getString()
+                    : key.toString());
+        }
+    }
+
+    private static int countArmor(Mob android) {
+        int count = 0;
+        for (ItemStack stack : android.getArmorSlots()) {
+            if (!stack.isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private static long experience(Mob android) {
         return Math.max(0L, android.getPersistentData().getLong(XP_TAG));
     }
@@ -1566,6 +2178,7 @@ public final class AndroidsCompatMod {
 
     private static void updateProgression(Mob android) {
         var data = android.getPersistentData();
+        boolean commandAndroid = isCommandAndroid(android);
         AttributeInstance speed = android.getAttribute(Attributes.MOVEMENT_SPEED);
         AttributeInstance health = android.getAttribute(Attributes.MAX_HEALTH);
         AttributeInstance follow = android.getAttribute(Attributes.FOLLOW_RANGE);
@@ -1573,8 +2186,11 @@ public final class AndroidsCompatMod {
         if (speed != null && !data.contains(BASE_SPEED_TAG)) {
             data.putDouble(BASE_SPEED_TAG, speed.getBaseValue());
         }
-        if (health != null && !data.contains(BASE_HEALTH_TAG)) {
-            data.putDouble(BASE_HEALTH_TAG, health.getBaseValue());
+        if (health != null && (!data.contains(BASE_HEALTH_TAG)
+                || (commandAndroid
+                && data.getDouble(BASE_HEALTH_TAG) > COMMAND_ANDROID_MAX_HEALTH))) {
+            data.putDouble(BASE_HEALTH_TAG, Math.min(health.getBaseValue(),
+                    commandAndroid ? COMMAND_ANDROID_MAX_HEALTH : health.getBaseValue()));
         }
         if (follow != null && !data.contains(BASE_FOLLOW_TAG)) {
             data.putDouble(BASE_FOLLOW_TAG, follow.getBaseValue());
@@ -1587,7 +2203,12 @@ public final class AndroidsCompatMod {
         }
         if (health != null && data.contains(BASE_HEALTH_TAG)) {
             double oldMax = health.getValue();
-            health.setBaseValue(data.getDouble(BASE_HEALTH_TAG) + growth * 2.0D);
+            double nextMax = data.getDouble(BASE_HEALTH_TAG) + growth * 2.0D;
+            if (commandAndroid) {
+                nextMax = Math.min(COMMAND_ANDROID_MAX_HEALTH, nextMax);
+                android.setInvulnerable(false);
+            }
+            health.setBaseValue(nextMax);
             if (android.getHealth() > health.getValue()) {
                 android.setHealth((float) health.getValue());
             } else if (health.getValue() > oldMax && android.getHealth() > 0.0F) {
@@ -1754,9 +2375,129 @@ public final class AndroidsCompatMod {
     }
 
     private static boolean isAndroid(Entity entity) {
+        return hasClassInHierarchy(entity, ANDROID_BASE_CLASS);
+    }
+
+    private static boolean isCommandAndroid(Entity entity) {
+        return hasClassInHierarchy(entity, COMMAND_ANDROID_CLASS);
+    }
+
+    private static boolean isAndroidFrame(Entity entity) {
+        return hasClassInHierarchy(entity, ANDROID_FRAME_CLASS);
+    }
+
+    private static int frameComponentsNeeded(Mob frame) {
+        Object value = invokeFrameMethod(frame, "getComponentsNeeded");
+        return value instanceof Number number ? number.intValue() : -1;
+    }
+
+    private static int frameIngotsNeeded(Mob frame) {
+        Object value = invokeFrameMethod(frame, "getIngotsNeeded");
+        return value instanceof Number number ? number.intValue() : -1;
+    }
+
+    private static boolean frameHasCore(Mob frame) {
+        return Boolean.TRUE.equals(invokeFrameMethod(frame, "hasCore"));
+    }
+
+    private static Object invokeFrameMethod(Mob frame, String name) {
+        try {
+            Method method = frame.getClass().getMethod(name);
+            return method.invoke(frame);
+        } catch (ReflectiveOperationException exception) {
+            LOGGER.warn("No se pudo consultar {} en AndroidFrame", name, exception);
+            return null;
+        }
+    }
+
+    private static boolean invokeDiamondPlates(Mob frame) {
+        try {
+            for (Method method : frame.getClass().getDeclaredMethods()) {
+                if (!"addPlates".equals(method.getName())
+                        || method.getParameterCount() != 2) {
+                    continue;
+                }
+                method.setAccessible(true);
+                Object result = method.invoke(frame, frame.level(), true);
+                return Boolean.TRUE.equals(result);
+            }
+        } catch (ReflectiveOperationException exception) {
+            LOGGER.warn("No se pudo aplicar un diamante al Android Frame", exception);
+        }
+        return false;
+    }
+
+    private static boolean isAndroidCpu(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return false;
+        }
+        var key = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        return key != null && "cc_androids:android_cpu".equals(key.toString());
+    }
+
+    private static int dyeColor(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return -1;
+        }
+        if (stack.is(Items.WHITE_DYE)) return 0xF9FFFE;
+        if (stack.is(Items.ORANGE_DYE)) return 0xF9801D;
+        if (stack.is(Items.MAGENTA_DYE)) return 0xC74EBD;
+        if (stack.is(Items.LIGHT_BLUE_DYE)) return 0x3AB3DA;
+        if (stack.is(Items.YELLOW_DYE)) return 0xFED83D;
+        if (stack.is(Items.LIME_DYE)) return 0x80C71F;
+        if (stack.is(Items.PINK_DYE)) return 0xF38BAA;
+        if (stack.is(Items.GRAY_DYE)) return 0x474F52;
+        if (stack.is(Items.LIGHT_GRAY_DYE)) return 0x9D9D97;
+        if (stack.is(Items.CYAN_DYE)) return 0x169C9C;
+        if (stack.is(Items.PURPLE_DYE)) return 0x8932B8;
+        if (stack.is(Items.BLUE_DYE)) return 0x3C44AA;
+        if (stack.is(Items.BROWN_DYE)) return 0x835432;
+        if (stack.is(Items.GREEN_DYE)) return 0x5E7C16;
+        if (stack.is(Items.RED_DYE)) return 0xB02E26;
+        if (stack.is(Items.BLACK_DYE)) return 0x1D1D21;
+        return -1;
+    }
+
+    private static boolean finishCommandFrame(Mob frame, ItemStack cpu) {
+        try {
+            for (Method method : frame.getClass().getDeclaredMethods()) {
+                if (!"finish".equals(method.getName())
+                        || method.getParameterCount() != 2
+                        || !method.getParameterTypes()[0].isEnum()
+                        || method.getParameterTypes()[1] != int.class) {
+                    continue;
+                }
+                @SuppressWarnings({"rawtypes", "unchecked"})
+                Object commandFamily = Enum.valueOf(
+                        (Class<? extends Enum>) method.getParameterTypes()[0], "COMMAND");
+                int computerId = -1;
+                if (cpu.hasTag() && cpu.getTag().contains("ComputerID")) {
+                    computerId = cpu.getTag().getInt("ComputerID");
+                }
+                method.setAccessible(true);
+                method.invoke(frame, commandFamily, computerId);
+                return true;
+            }
+        } catch (ReflectiveOperationException exception) {
+            LOGGER.warn("No se pudo finalizar el Android Frame como Command Android",
+                    exception);
+        }
+        return false;
+    }
+
+    private static void consumeOne(Player player, InteractionHand hand) {
+        if (!player.getAbilities().instabuild) {
+            player.getItemInHand(hand).shrink(1);
+        }
+    }
+
+    private static boolean hasClassInHierarchy(Entity entity, String className) {
+        if (entity == null) {
+            return false;
+        }
         Class<?> type = entity.getClass();
         while (type != null) {
-            if (ANDROID_BASE_CLASS.equals(type.getName())) {
+            if (className.equals(type.getName())) {
                 return true;
             }
             type = type.getSuperclass();
@@ -1804,6 +2545,8 @@ public final class AndroidsCompatMod {
     /** NTGL's goal can be blocked by CC:Androids' own movement goals. */
     private static void directGroundShot(Mob android, LivingEntity target) {
         if (!(android instanceof PathfinderMob)
+                || android.isPassenger()
+                || combatBlocked(android)
                 || !isValidTarget(android, target)
                 || !isNtglWeapon(android.getMainHandItem())) {
             return;
@@ -2051,6 +2794,95 @@ public final class AndroidsCompatMod {
                 || name.contains("satchel") || id.contains("satchel");
     }
 
+    /**
+     * Treat the worn Sophisticated Backpack as a real reserve inventory.
+     * Supplies are pulled into the Android inventory before NTGL reloads or
+     * equipment selection, so the backpack remains worn and visible while it
+     * is actually useful instead of being decorative storage.
+     */
+    private static void syncBackpackSupplies(Mob android) {
+        if (!ModList.get().isLoaded("sophisticatedbackpacks")) {
+            return;
+        }
+        SimpleContainer inventory = getAndroidInventory(android);
+        ItemStack backpack = getEquippedBackpackCurio(android);
+        if (inventory == null || backpack.isEmpty()) {
+            return;
+        }
+
+        try {
+            IItemHandler handler = backpack.getCapability(ForgeCapabilities.ITEM_HANDLER)
+                    .resolve().orElse(null);
+            if (handler == null) {
+                return;
+            }
+
+            for (int sourceSlot = 0; sourceSlot < handler.getSlots(); sourceSlot++) {
+                ItemStack source = handler.getStackInSlot(sourceSlot);
+                if (source.isEmpty() || !isUsefulBackpackSupply(source)) {
+                    continue;
+                }
+                moveBackpackStack(inventory, handler, sourceSlot, source);
+            }
+        } catch (RuntimeException error) {
+            LOGGER.debug("Sophisticated Backpack inventory is unavailable", error);
+        }
+    }
+
+    private static boolean isUsefulBackpackSupply(ItemStack stack) {
+        if (isBackpack(stack) || isNtglWeapon(stack)
+                || stack.getItem() instanceof ArmorItem || isFuelItem(stack)) {
+            return true;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase();
+        String name = stack.getHoverName().getString().toLowerCase();
+        String combined = id + " " + name;
+        return combined.contains("ammo") || combined.contains("round")
+                || combined.contains("bullet") || combined.contains("cartridge")
+                || combined.contains("shell") || combined.contains("nail")
+                || combined.contains("rocket") || combined.contains("rocket")
+                || combined.contains("spear") || combined.contains("lead_ball")
+                || combined.contains("paper_shot") || combined.contains("redstone");
+    }
+
+    private static boolean isFuelItem(ItemStack stack) {
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase();
+        String name = stack.getHoverName().getString().toLowerCase();
+        return (id.contains("redstone") || name.contains("redstone"))
+                && !id.contains("redstone_torch") && !name.contains("redstone torch");
+    }
+
+    private static void moveBackpackStack(SimpleContainer inventory, IItemHandler handler,
+                                          int sourceSlot, ItemStack source) {
+        for (int targetSlot = 0; targetSlot < inventory.getContainerSize(); targetSlot++) {
+            ItemStack target = inventory.getItem(targetSlot);
+            if (!target.isEmpty()
+                    && !ItemStack.isSameItemSameTags(target, source)) {
+                continue;
+            }
+            int capacity = target.isEmpty()
+                    ? Math.min(source.getMaxStackSize(), inventory.getMaxStackSize())
+                    : Math.min(target.getMaxStackSize(), inventory.getMaxStackSize())
+                    - target.getCount();
+            if (capacity <= 0) {
+                continue;
+            }
+            int amount = Math.min(capacity, source.getCount());
+            ItemStack moved = handler.extractItem(sourceSlot, amount, false);
+            if (moved.isEmpty()) {
+                return;
+            }
+            if (target.isEmpty()) {
+                inventory.setItem(targetSlot, moved);
+            } else {
+                target.grow(moved.getCount());
+                inventory.setItem(targetSlot, target);
+            }
+            inventory.setChanged();
+            return;
+        }
+    }
+
     /** Uses Curios' back slot without a hard dependency on Curios. */
     private static boolean equipBackpackCurio(Mob android, ItemStack backpack) {
         try {
@@ -2092,6 +2924,39 @@ public final class AndroidsCompatMod {
         return false;
     }
 
+    private static ItemStack getEquippedBackpackCurio(Mob android) {
+        try {
+            Class<?> api = Class.forName("top.theillusivec4.curios.api.CuriosApi");
+            Object lazy = api.getMethod("getCuriosInventory", LivingEntity.class)
+                    .invoke(null, android);
+            Object resolved = lazy.getClass().getMethod("resolve").invoke(lazy);
+            if (!(resolved instanceof Optional<?> optional) || optional.isEmpty()) {
+                return ItemStack.EMPTY;
+            }
+            Object handler = optional.get();
+            Object slotResult = handler.getClass()
+                    .getMethod("getStacksHandler", String.class)
+                    .invoke(handler, "back");
+            if (!(slotResult instanceof Optional<?> slotOptional)
+                    || slotOptional.isEmpty()) {
+                return ItemStack.EMPTY;
+            }
+            Object stacks = slotOptional.get().getClass().getMethod("getStacks")
+                    .invoke(slotOptional.get());
+            int slots = (Integer) stacks.getClass().getMethod("getSlots").invoke(stacks);
+            for (int index = 0; index < slots; index++) {
+                ItemStack stack = (ItemStack) stacks.getClass()
+                        .getMethod("getStackInSlot", int.class).invoke(stacks, index);
+                if (!stack.isEmpty() && isBackpack(stack)) {
+                    return stack;
+                }
+            }
+        } catch (ReflectiveOperationException | ClassCastException error) {
+            LOGGER.debug("Could not read Curios backpack slot", error);
+        }
+        return ItemStack.EMPTY;
+    }
+
     private static Class<?> loadNtglWeaponType() {
         if (checkedNtgl) {
             return ntglWeaponType;
@@ -2111,7 +2976,7 @@ public final class AndroidsCompatMod {
     }
 
     private static boolean isValidTarget(Mob mob, LivingEntity target) {
-        return !isSpy(mob)
+        return !combatBlocked(mob)
                 && target != null
                 && target.isAlive()
                 && target instanceof Enemy
@@ -2125,7 +2990,7 @@ public final class AndroidsCompatMod {
                 mob.getBoundingBox().inflate(TARGET_RANGE),
                 target -> target != mob
                         && target.isAlive()
-                        && !isSpy(mob)
+                        && !combatBlocked(mob)
                         && target instanceof Enemy
                         && !(target instanceof Player)
                         && !mob.isAlliedTo(target));

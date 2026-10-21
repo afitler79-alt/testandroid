@@ -23,7 +23,7 @@ local function main()
   while true do
    local now=os.clock()
    if now>=nextPilot then pilot(unit); nextPilot=now+RETRY end
-   if android.fuelLevel()<REFUEL_AT and now>=nextFuel then send("!androidscompat order logistics"); nextFuel=now+REFUEL_RETRY end
+   if android.fuelLevel()<REFUEL_AT and now>=nextFuel then order(unit,"logistics",""); nextFuel=now+REFUEL_RETRY end
    if now>=nextStatus then local s=android.getSelf(); print(LABEL.." | HP="..tostring(s.health).." | fuel="..tostring(android.fuelLevel())); nextStatus=now+15 end
    sleep(1)
   end
