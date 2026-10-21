@@ -1,4 +1,4 @@
--- FUSILERO v18.3
+-- FUSILERO v18.5
 -- CC:Androids 1.3.0 / NTGL 3.1.2
 -- Busca objetos por el nombre que informa getSlotInfo; no depende de una ranura fija.
 
@@ -9,12 +9,7 @@ local REFUEL_RETRY_DELAY = 15
 local STASH_SIZE = 9
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
-local ATTACK_TIMEOUT = 15
-local FIRE_COOLDOWN = 0.5
-local AIM_BEFORE_SHOT = true
-local AIM_DELAY = 0.3
-local COMBAT_RANGE_SQ = 14*14
-local MIN_RANGE_SQ = 4*4
+local ATTACK_TIMEOUT = 45
 local OWNERS_FILE = "owners.cfg"
 
 local WEAPONS = {
@@ -88,11 +83,12 @@ local TARGETS = {
     "vampirism:vampire","vampirism:ghoul","werewolves:werewolf",
 }
 
-local lastFire = 0
 local lastTarget = nil
+local preparedTarget = nil
 local inCombat = false
 local lastCombatEnd = 0
 local attackStart = 0
+local lastAttackError = 0
 
 local function fail(v)
     return type(v)=="table" and v[1]==true
@@ -322,41 +318,49 @@ local function findMob()
 end
 
 local function combat(mob)
-    local s = android.getSelf()
-    if not s or not mob then return end
-
-    local dx=mob.posX-s.posX
-    local dy=mob.posY-s.posY
-    local dz=mob.posZ-s.posZ
-    local d=dx*dx+dy*dy+dz*dz
-
+    if not mob or not mob.uuid then return false end
     local w = hand()
     if not w or not isWep(w) or (cgsWeaponRank(w)==nil and findWeaponSlot()~=nil) then
-        equipWeapon()
-        if d > MIN_RANGE_SQ then
-            android.moveTo({x=mob.posX,y=mob.posY,z=mob.posZ})
+        if not equipWeapon() then
+            if os.clock()-lastAttackError>=5 then
+                print("No ataco: no pude equipar un arma CGS")
+                lastAttackError=os.clock()
+            end
+            return false
         end
-        return
     end
 
-    if d > COMBAT_RANGE_SQ then
-        android.moveTo({x=mob.posX,y=mob.posY,z=mob.posZ})
-    elseif d < MIN_RANGE_SQ then
-        android.moveTo({
-            x=s.posX+(s.posX-mob.posX)*0.5,
-            y=s.posY,
-            z=s.posZ+(s.posZ-mob.posZ)*0.5,
-        })
-    else
-        local now = os.clock()
-        if now - lastFire < FIRE_COOLDOWN then return end
-        if AIM_BEFORE_SHOT then
-            pcall(android.useEntity,mob.uuid)
-            sleep(AIM_DELAY)
+    w=hand()
+    if not w or not isWep(w) then return false end
+
+    -- NTGL necesita la interacción con la entidad para el uso/recarga del arma.
+    -- Se ejecuta una sola vez por objetivo y se deja terminar antes de atacar.
+    if preparedTarget~=mob.uuid then
+        local ok,result=pcall(android.useEntity,mob.uuid)
+        preparedTarget=mob.uuid
+        if not ok or fail(result) then
+            if os.clock()-lastAttackError>=5 then
+                local detail=type(result)=="table" and result[2] or result
+                print("Interacción NTGL fallida: "..tostring(detail or "error API"))
+                lastAttackError=os.clock()
+            end
         end
-        local ok,r = pcall(android.attack,mob.uuid)
-        if ok and not fail(r) then lastFire = now end
+        return true
     end
+
+    -- attack() gestiona el acercamiento y el ataque; se inicia después de que
+    -- useEntity haya terminado su tarea asíncrona.
+    attackStart=os.clock()
+    local ok,result=pcall(android.attack,mob.uuid)
+    if not ok or fail(result) then
+        if os.clock()-lastAttackError>=5 then
+            local detail=type(result)=="table" and result[2] or result
+            print("Ataque fallido: "..tostring(detail or "error API"))
+            lastAttackError=os.clock()
+        end
+        return false
+    end
+    return true
 end
 
 local function parseOwners(input)
@@ -440,7 +444,7 @@ local function main()
         return
     end
 
-    print("=== v18.3 ===")
+    print("=== v18.5 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
