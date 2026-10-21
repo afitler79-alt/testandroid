@@ -510,4 +510,18 @@ local function main()
                         end
                     end
                 end
-                sleep
+                sleep(SCAN_DELAY)
+            end
+        end,
+        waitStop,
+        function() listen(s,state,owners) end
+    )
+    pcall(android.cancelTask)
+    print("Detenido.")
+end
+
+local ok,err=pcall(main)
+if not ok then
+    pcall(android.cancelTask)
+    print("Error: "..tostring(err))
+end
