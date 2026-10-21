@@ -1,9 +1,9 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v12 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- ROL FUSILERO v12.1 (CC:Androids 1.3.0 / Forge 1.20.1)
 -- NTGL 3.1.2:
 --   Left click (attack)  = disparar + auto-recarga
 --   Right click (useEnt) = apuntar (ADS)
--- No se usa right click para recargar.
+-- NO ataca sin arma CGS/CBC en mano.
 -- Stash: 11 ranuras (0-10). Escaneo dinámico.
 -- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
@@ -28,8 +28,8 @@ local OWNERS_FILE = "owners.cfg"
 local COMBAT_RANGE_SQ = 14 * 14
 local MIN_RANGE_SQ = 4 * 4
 local FIRE_COOLDOWN = 0.5
-local AIM_BEFORE_SHOT = true    -- Apuntar (right click) antes de disparar
-local AIM_DELAY = 0.3           -- Pausa tras apuntar antes de disparar
+local AIM_BEFORE_SHOT = true
+local AIM_DELAY = 0.3
 
 local MAG_CAPACITY = {
     ["cgs:flintlock"] = 1,
@@ -453,33 +453,28 @@ local function refuel()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE (solo left click)
+-- COMBATE (solo left click, requiere arma en mano)
 -- ═══════════════════════════════════════════════════════════════
--- LEFT CLICK = disparar (NTGL auto-recarga si mag vacío)
--- RIGHT CLICK = apuntar (ADS) - opcional antes de disparar
-
-local function aimAt(mob)
-    if not AIM_BEFORE_SHOT then return end
-    local ok, result = pcall(android.useEntity, mob.uuid)
-    if ok and not apiFailed(result) then
-        sleep(AIM_DELAY)
-    end
-end
 
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
 
     local weapon = handInfo()
+
+    -- BLOQUEO: sin arma CGS/CBC en mano NO se ataca
     if not weapon or not isWeapon(weapon) then
         ensureWeapon()
         return false
     end
 
-    -- Opcional: apuntar antes de disparar
-    aimAt(mob)
+    -- Apuntar (right click = ADS)
+    if AIM_BEFORE_SHOT then
+        pcall(android.useEntity, mob.uuid)
+        sleep(AIM_DELAY)
+    end
 
-    -- LEFT CLICK: NTGL dispara o auto-recarga+dispara
+    -- LEFT CLICK: NTGL dispara (auto-recarga si mag vacío)
     local ok, result = pcall(android.attack, mob.uuid)
     if not ok or apiFailed(result) then return false end
 
@@ -497,6 +492,18 @@ local function engage(mob)
     local dz = mob.posZ - self.posZ
     local distSq = dx*dx + dy*dy + dz*dz
 
+    local weapon = handInfo()
+
+    -- Sin arma: solo acercarse, NO atacar
+    if not weapon or not isWeapon(weapon) then
+        ensureWeapon()
+        if distSq > COMBAT_RANGE_SQ then
+            android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
+        end
+        return
+    end
+
+    -- Con arma: lógica de rango
     if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
     elseif distSq < MIN_RANGE_SQ then
@@ -623,16 +630,16 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v12 ═══")
+    print("═══ Fusilero v12.1 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon and isWeapon(weapon) then
         print("→ Left=disparo+recarga | Right=apuntar")
     elseif weapon then
-        print("⚠ No es arma CGS/CBC")
+        print("⚠ No es arma CGS/CBC (no atacará)")
     else
         print("→ Buscará arma en stash")
     end
-    print("Refuel: solo sin hostiles a <" .. tostring(math.sqrt(REFUEL_SAFE_RADIUS_SQ)) .. " bloques")
+    print("Refuel: solo sin hostiles a <20 bloques")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -706,7 +713,7 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v12 | " .. state.mode
+                        unitName .. " | v12.1 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
@@ -863,7 +870,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v12 detenido.")
+    print("Fusilero v12.1 detenido.")
 end
 
 local ok, err = pcall(main)
