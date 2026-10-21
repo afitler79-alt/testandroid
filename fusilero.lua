@@ -73,6 +73,7 @@ local fireMethod = nil
 local lastFire = 0
 local lastTarget = nil
 local inCombat = false
+local lastReloadNotice = 0
 
 -- ---------------------------------------------------------------- utilidades
 local function fail(v) return type(v)=="table" and v[1]==true end
@@ -361,7 +362,11 @@ local function waitStop()
         local _,k=os.pullEvent("key")
         if k==keys.q then return end
         if k==keys.r then
-            print("Recarga automatica: androidscompat/NTGL")
+            local now=os.clock()
+            if now-lastReloadNotice>=2 then
+                print("La recarga es automatica; R no ejecuta comandos del servidor")
+                lastReloadNotice=now
+            end
         end
     end
 end

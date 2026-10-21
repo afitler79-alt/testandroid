@@ -7,6 +7,8 @@
 -- cuando se encuentra a distancia de melee.
 -- Este archivo mantiene melee intencionadamente; androidscompat no convierte
 -- attack() en disparo. Para armas NTGL usa fusilero.lua o guardia_civil.lua.
+-- Este rol conserva melee intencionadamente; la recarga automatica y el
+-- equipamiento de armadura/mochila pertenecen a los roles NTGL del addon.
 -- ============================================================
 
 local SCAN_DELAY = 0.8

@@ -1,7 +1,8 @@
--- GUARDIA CIVIL v20 - adaptada a androidscompat + NTGL
+-- GUARDIA CIVIL v21 - adaptada a androidscompat + NTGL
 -- CC:Androids 1.3.0 / Forge 1.20.1
 -- Busca armas por el nombre que informa getSlotInfo; no depende de una ranura fija.
 -- No simula clics: androidscompat entrega el objetivo a NTGL.
+-- Tambien gestiona recarga automatica y equipamiento de armadura/mochila.
 -- NTGL recarga automáticamente; R o !guardia all reload solicitan recarga manual.
 -- Aviones: ejecuta como jugador /androidscompat mount cerca de un avión vacío.
 
@@ -90,6 +91,7 @@ local lastCombatEnd = 0
 local attackStart = 0
 local lastAttackError = 0
 local lastWeaponUse = 0
+local lastReloadNotice = 0
 
 local function fail(v)
     return type(v)=="table" and v[1]==true
@@ -372,8 +374,11 @@ local function waitStop()
         local _,k=os.pullEvent("key")
         if k==keys.q then return end
         if k==keys.r then
-            local ok=pcall(android.sendChatMessage,"!androidscompat reload")
-            print(ok and "Recarga solicitada (R)" or "No se pudo solicitar la recarga")
+            local now=os.clock()
+            if now-lastReloadNotice>=2 then
+                print("La recarga es automatica; R no ejecuta comandos del servidor")
+                lastReloadNotice=now
+            end
         end
     end
 end
@@ -395,8 +400,7 @@ local function listen(unit,state,owners)
                     state.mode="return"
                     android.cancelTask()
                 elseif c=="reload" then
-                    pcall(android.sendChatMessage,"!androidscompat reload")
-                    print("Recarga solicitada por chat")
+                    print("Recarga automatica activa: androidscompat/NTGL")
                 elseif c=="status" then
                     local s=android.getSelf()
                     local w=hand()
@@ -407,6 +411,8 @@ local function listen(unit,state,owners)
                         .."|fuel="..tostring(android.fuelLevel())
                         .."|wep="..tostring(w or "-")
                         .."|combat="..tostring(inCombat)
+                        .."|backend=androidscompat/NTGL"
+                        .."|equip=armadura+mochila"
                         .."|inv="..inv)
                 end
             end
@@ -426,7 +432,7 @@ local function main()
 
     local initialInventory=scanInventory()
     state.inventoryStatus=inventorySummary(initialInventory)
-    print("=== Guardia Civil Melee v18.8 ===")
+    print("=== Guardia Civil NTGL v21 ===")
     print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Equipo: selección automática de arma melee")

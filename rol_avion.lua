@@ -1,23 +1,19 @@
--- Base común de los roles aéreos.
--- Uso interno desde piloto_combate.lua, transportador_cargas.lua y
--- bombardero.lua. El control del avión lo realiza androidscompat.
+-- BASE DE ROLES AEREOS
+-- Uso: shell.run("rol_avion.lua", "combat|bomber|transport")
 
 local role = tostring((...))
 local labels = {
     combat = "PILOTO DE COMBATE",
-    transport = "TRANSPORTADOR DE CARGAS",
     bomber = "BOMBARDERO",
+    transport = "TRANSPORTADOR DE CARGAS",
 }
-local label = labels[role] or "PILOTO DE COMBATE"
 if not labels[role] then role = "combat" end
 
 local REFUEL_AT = 20
 local REFUEL_RETRY = 15
+local AUTOPILOT_RETRY = 10
 local STASH_SIZE = 9
 local OWNERS_FILE = "owners.cfg"
-
--- El disparo, la municion y la recarga del armamento montado los gestiona
--- androidscompat en el servidor; este script no simula clics.
 
 local function failed(value)
     return type(value) == "table" and value[1] == true
@@ -89,66 +85,72 @@ local function refuel()
         local ok, result = pcall(android.storeItem, savedSlot)
         if not ok or failed(result) then return false end
     end
-    if not holdingFuel then pcall(android.equipSlot, fuelSlot) end
 
+    if not holdingFuel then pcall(android.equipSlot, fuelSlot) end
     local before = android.fuelLevel()
     pcall(android.refuel, 1)
     local after = android.fuelLevel()
     if not holdingFuel and hand() then pcall(android.storeItem, fuelSlot) end
     if savedSlot then pcall(android.equipSlot, savedSlot) end
-    print("Fuel: " .. tostring(before) .. " -> " .. tostring(after))
+    print("Fuel android: " .. tostring(before) .. " -> " .. tostring(after))
     return after > before
 end
 
-local function parseOwners(input)
-    local result = {}
-    for part in tostring(input):gmatch("[^,\n]+") do
+local function loadOwners()
+    local owners = {}
+    if not fs.exists(OWNERS_FILE) then return owners end
+    local file = fs.open(OWNERS_FILE, "r")
+    if not file then return owners end
+    for part in file.readAll():gmatch("[^,\n]+") do
         local name = part:match("^%s*(.-)%s*$")
-        if name ~= "" then result[name:lower()] = true end
+        if name ~= "" then owners[name:lower()] = true end
     end
-    return result
+    file.close()
+    return owners
 end
 
-local function loadOwners()
-    if not fs.exists(OWNERS_FILE) then return {} end
-    local file = fs.open(OWNERS_FILE, "r")
-    if not file then return {} end
-    local result = parseOwners(file.readAll())
-    file.close()
-    return result
+local function requestAutopilot()
+    -- AndroidsCompat intercepta este mensaje en el servidor y monta al Android
+    -- en el avion vacio mas cercano, asignando tambien el rol.
+    pcall(android.sendChatMessage, "!androidscompat autopilot " .. role)
 end
 
 local function main()
     local unit = android.getSelf()
     local owners = loadOwners()
     local lastFuel = -REFUEL_RETRY
+    local lastAutopilot = -AUTOPILOT_RETRY
     local lastStatus = 0
 
-    print(label .. " activo")
-    print("Ejecuta como jugador: /androidscompat mount")
-    print("Selecciona el modo: /androidscompat mode " .. role)
-    print("Armamento y recarga: gestionados por androidscompat + NTGL")
+    print(labels[role] .. " activo")
+    print("Montaje autonomo: buscando avion vacio cercano")
+    print("Rol autonomo: " .. role)
+    print("El avion debe tener combustible propio")
     if role == "combat" then
-        print("Ataca otros aviones y objetivos terrestres.")
+        print("Combate: aviones enemigos y objetivos terrestres")
     elseif role == "bomber" then
-        print("Usa Bomb Bay contra objetivos terrestres.")
+        print("Bombardero: objetivos terrestres")
     else
-        print("No dispara; conserva el avión para cargas.")
+        print("Transporte: no dispara")
     end
+    print("Armas, recarga, motor, armadura y mochila: androidscompat")
 
     parallel.waitForAny(
         function()
             while true do
                 local now = os.clock()
+                if now - lastAutopilot >= AUTOPILOT_RETRY then
+                    requestAutopilot()
+                    lastAutopilot = now
+                end
                 if android.fuelLevel() < REFUEL_AT
                     and now - lastFuel >= REFUEL_RETRY then
                     refuel()
                     lastFuel = now
                 end
-
                 if now - lastStatus >= 15 then
                     local self = android.getSelf()
-                    print(label .. " | HP=" .. tostring(self.health)
+                    print(labels[role] .. " | HP=" .. tostring(self.health)
                         .. " | fuel=" .. tostring(android.fuelLevel()))
                     lastStatus = now
                 end
@@ -164,18 +166,22 @@ local function main()
                     local target, command = tostring(data.message or "")
                         :match("^!avion%s+(%S+)%s+(%S+)")
                     if target and (target:lower() == "all"
-                        or target:lower() == tostring(unit.name):lower())
-                        and command:lower() == "status" then
-                        pcall(android.sendChatMessage,
-                            label .. " | modo=" .. role
-                            .. " | fuel=" .. tostring(android.fuelLevel()))
+                        or target:lower() == tostring(unit.name):lower()) then
+                        command = command:lower()
+                        if command == "mount" then
+                            requestAutopilot()
+                        elseif command == "status" then
+                            pcall(android.sendChatMessage,
+                                labels[role] .. " | modo=" .. role
+                                .. " | fuel=" .. tostring(android.fuelLevel()))
+                        end
                     end
                 end
             end
         end
     )
     pcall(android.cancelTask)
-    print(label .. " detenido.")
+    print(labels[role] .. " detenido.")
 end
 
 local ok, err = pcall(main)
