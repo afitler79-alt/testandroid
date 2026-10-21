@@ -1,13 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v9 (CC:Androids 1.3.0 / Forge 1.20.1)
--- Modpack: Create + Gunsmithing 1.4.4 + NTGL 3.1.2 + Big Cannons
---
--- NTGL permite que entidades vivas usen armas:
---   android.attack(uuid)    → LEFT CLICK → NTGL dispara el arma
---   android.useEntity(uuid) → RIGHT CLICK → NTGL recarga
---   android.useBlock(x,y,z) → RIGHT CLICK al bloque → NTGL recarga
---
--- La munición debe estar en la HOTBAR del android.
+-- ROL FUSILERO v9.1 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- NTGL 3.1.2: left click=disparo, right click=recarga
+-- Stash: 11 ranuras (0-10). Redstone se busca en cualquier ranura.
+-- Munición: en la HOTBAR del android (no en la stash).
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -15,7 +10,7 @@ local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 6
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 5
-local FUEL_SLOT = 7
+local STASH_SIZE = 11          -- Ranuras: 0-10
 local PICKUP_SCAN_DELAY = 0.8
 local HEAL_AT = 12
 local HEAL_RETRY_DELAY = 8
@@ -41,7 +36,6 @@ local MAG_CAPACITY = {
     ["cgs:launcher"] = 1,
     ["cgs:pneumatic_hammer"] = 1,
     ["cgs:frag_grenade"] = 1,
-    -- Big Cannons
     ["cbc:ballistic_pistol"] = 8,
     ["cbc:ballistic_carbine"] = 16,
     ["cbc:ballistic_shotgun"] = 2,
@@ -49,33 +43,23 @@ local MAG_CAPACITY = {
     ["cbc:ballistic_gatling"] = 64,
     ["cbc:ballistic_grenade_launcher"] = 4,
     ["cbc:ballistic_minigun"] = 100,
+    ["cbc:ballistic_cannon"] = 1,
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- ARMAS: Create: Gunsmithing (cgs:)
+-- ARMAS
 -- ═══════════════════════════════════════════════════════════════
 local CGS_WEAPONS = {
-    "cgs:flintlock",
-    "cgs:revolver",
-    "cgs:shotgun",
-    "cgs:nailgun",
-    "cgs:gatling",
-    "cgs:blazegun",
-    "cgs:launcher",
-    "cgs:pneumatic_hammer",
-    "cgs:frag_grenade",
+    "cgs:flintlock", "cgs:revolver", "cgs:shotgun",
+    "cgs:nailgun", "cgs:gatling", "cgs:blazegun",
+    "cgs:launcher", "cgs:pneumatic_hammer", "cgs:frag_grenade",
 }
 
--- ARMAS: Create: Big Cannons (cbc:)
 local CBC_WEAPONS = {
-    "cbc:ballistic_pistol",
-    "cbc:ballistic_carbine",
-    "cbc:ballistic_shotgun",
-    "cbc:ballistic_sniper",
-    "cbc:ballistic_gatling",
-    "cbc:ballistic_grenade_launcher",
-    "cbc:ballistic_minigun",
-    "cbc:ballistic_cannon",
+    "cbc:ballistic_pistol", "cbc:ballistic_carbine",
+    "cbc:ballistic_shotgun", "cbc:ballistic_sniper",
+    "cbc:ballistic_gatling", "cbc:ballistic_grenade_launcher",
+    "cbc:ballistic_minigun", "cbc:ballistic_cannon",
 }
 
 local ALL_WEAPONS = {}
@@ -83,45 +67,26 @@ for _, w in ipairs(CGS_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 for _, w in ipairs(CBC_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 
 -- ═══════════════════════════════════════════════════════════════
--- MUNICIÓN: CGS
+-- MUNICIÓN
 -- ═══════════════════════════════════════════════════════════════
 local CGS_AMMO = {
-    "cgs:paper_cartridge",
-    "cgs:paper_shot",
-    "cgs:round_revolver",
-    "cgs:round_revolver_piercing",
-    "cgs:round_revolver_blank",
-    "cgs:round_shotgun",
-    "cgs:round_shotgun_flechette",
-    "cgs:round_shotgun_flechette_steel",
-    "cgs:round_shotgun_incendiary",
-    "cgs:round_shotgun_blank",
-    "cgs:round_gatling",
-    "cgs:round_gatling_piercing",
-    "cgs:round_gatling_blank",
-    "cgs:nail",
-    "cgs:nail_steel",
-    "cgs:rocket",
-    "cgs:rocket_small",
-    "cgs:spear",
-    "cgs:lead_balls",
-    "cgs:shell_gatling",
-    "cgs:shell_revolver",
-    "cgs:shell_shotgun",
+    "cgs:paper_cartridge", "cgs:paper_shot",
+    "cgs:round_revolver", "cgs:round_revolver_piercing", "cgs:round_revolver_blank",
+    "cgs:round_shotgun", "cgs:round_shotgun_flechette", "cgs:round_shotgun_flechette_steel",
+    "cgs:round_shotgun_incendiary", "cgs:round_shotgun_blank",
+    "cgs:round_gatling", "cgs:round_gatling_piercing", "cgs:round_gatling_blank",
+    "cgs:nail", "cgs:nail_steel",
+    "cgs:rocket", "cgs:rocket_small",
+    "cgs:spear", "cgs:lead_balls",
+    "cgs:shell_gatling", "cgs:shell_revolver", "cgs:shell_shotgun",
 }
 
--- MUNICIÓN: Big Cannons
 local CBC_AMMO = {
-    "cbc:ballistic_pistol_round",
-    "cbc:ballistic_carbine_round",
-    "cbc:ballistic_shotgun_shell",
-    "cbc:ballistic_sniper_round",
-    "cbc:ballistic_gatling_round",
-    "cbc:ballistic_grenade",
-    "cbc:ballistic_minigun_round",
-    "cbc:cannon_shot",
-    "cbc:explosive_cannon_shot",
-    "cbc:incendiary_cannon_shot",
+    "cbc:ballistic_pistol_round", "cbc:ballistic_carbine_round",
+    "cbc:ballistic_shotgun_shell", "cbc:ballistic_sniper_round",
+    "cbc:ballistic_gatling_round", "cbc:ballistic_grenade",
+    "cbc:ballistic_minigun_round", "cbc:cannon_shot",
+    "cbc:explosive_cannon_shot", "cbc:incendiary_cannon_shot",
 }
 
 local ALL_AMMO = {}
@@ -145,7 +110,7 @@ local POTION_ITEMS = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- TABLA DE RECOGIDA
+-- RECOGIDA
 -- ═══════════════════════════════════════════════════════════════
 local ROLE_DROPS = {}
 for _, w in ipairs(ALL_WEAPONS) do ROLE_DROPS[#ROLE_DROPS+1] = { match=w, kind="weapon" } end
@@ -234,8 +199,9 @@ local function isWeapon(name)
     return matchesList(name, ALL_WEAPONS)
 end
 
+-- BUSCA RANURA VACÍA (0 a 10)
 local function findEmptySlot(exclude)
-    for index = 0, 8 do
+    for index = 0, STASH_SIZE - 1 do
         if index ~= exclude then
             local _, occupied = slotInfo(index)
             if not occupied then return index end
@@ -245,8 +211,8 @@ local function findEmptySlot(exclude)
 end
 
 local function findAnyEmptySlot(excludeA, excludeB)
-    for index = 0, 8 do
-        if index ~= FUEL_SLOT and index ~= excludeA and index ~= excludeB then
+    for index = 0, STASH_SIZE - 1 do
+        if index ~= excludeA and index ~= excludeB then
             local _, occupied = slotInfo(index)
             if not occupied then return index end
         end
@@ -255,9 +221,20 @@ local function findAnyEmptySlot(excludeA, excludeB)
 end
 
 local function findSlotWithItem(list)
-    for index = 0, 8 do
+    for index = 0, STASH_SIZE - 1 do
         local name, occupied = slotInfo(index)
         if occupied and matchesList(name, list) then
+            return index
+        end
+    end
+    return nil
+end
+
+-- BUSCA REDSTONE EN CUALQUIER RANURA (0-10)
+local function findRedstoneSlot()
+    for index = 0, STASH_SIZE - 1 do
+        local name, occupied = slotInfo(index)
+        if occupied and name and name:lower():find("redstone", 1, true) then
             return index
         end
     end
@@ -280,9 +257,8 @@ local function getMagCapacity()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE (NTGL: left click = disparar, right click = recargar)
+-- COMBATE (NTGL)
 -- ═══════════════════════════════════════════════════════════════
-
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
@@ -290,15 +266,8 @@ local function fireAt(mob)
     local weapon = handInfo()
     if not weapon or not isWeapon(weapon) then return false end
 
-    -- LEFT CLICK → NTGL intercepta y dispara el arma
     local ok, result = pcall(android.attack, mob.uuid)
-    if not ok then
-        if os.clock() - lastFireTime > 5 then
-            print("attack() error: " .. tostring(result))
-        end
-        return false
-    end
-    if apiFailed(result) then return false end
+    if not ok or apiFailed(result) then return false end
 
     lastFireTime = now
     shotsFired = shotsFired + 1
@@ -314,13 +283,11 @@ local function tryReload(mob)
 
     local success = false
 
-    -- RIGHT CLICK al mob → NTGL recarga
     if mob and mob.uuid then
         local ok, result = pcall(android.useEntity, mob.uuid)
         if ok and not apiFailed(result) then success = true end
     end
 
-    -- RIGHT CLICK al suelo
     if not success then
         local self = android.getSelf()
         local bx = math.floor(self.posX)
@@ -330,7 +297,6 @@ local function tryReload(mob)
         if ok and not apiFailed(result) then success = true end
     end
 
-    -- RIGHT CLICK a bloque adyacente
     if not success then
         local self = android.getSelf()
         local bx = math.floor(self.posX) + 1
@@ -349,9 +315,9 @@ local function tryReload(mob)
     else
         reloadFailCount = reloadFailCount + 1
         if reloadFailCount == 3 then
-            print("AVISO: 3 recargas fallidas. ¿Hay munición en la HOTBAR?")
+            print("AVISO: 3 recargas fallidas. ¿Munición en la HOTBAR?")
         end
-        shotsFired = 0  -- No bloquear el disparo
+        shotsFired = 0
     end
     return success
 end
@@ -456,20 +422,12 @@ local function collectRoleDrops()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- REPOSTAJE
+-- REPOSTAJE (busca redstone en cualquier ranura 0-10)
 -- ═══════════════════════════════════════════════════════════════
-local function findFuelSlot()
-    local name, occupied = slotInfo(FUEL_SLOT)
-    if occupied and name and name:lower():find("redstone", 1, true) then
-        return FUEL_SLOT
-    end
-    return nil
-end
-
 local function refuelWithoutDroppingWeapon()
-    local fuelSlot = findFuelSlot()
+    local fuelSlot = findRedstoneSlot()
     if not fuelSlot then
-        return false, "sin redstone en r" .. FUEL_SLOT
+        return false, "sin redstone en ninguna ranura"
     end
 
     local heldName = handInfo()
@@ -478,7 +436,7 @@ local function refuelWithoutDroppingWeapon()
     if heldName then
         tempSlot = findEmptySlot(fuelSlot)
         if not tempSlot then
-            return false, "sin ranura libre"
+            return false, "sin ranura libre para guardar el arma"
         end
         local ok, err = pcall(android.storeItem, tempSlot)
         if not ok or apiFailed(err) then
@@ -510,21 +468,22 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v9 ═══")
+    print("═══ Fusilero v9.1 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon and isWeapon(weapon) then
-        print("→ NTGL activo: left click=disparo, right click=recarga")
+        print("→ NTGL: left=disparo, right=recarga")
     elseif weapon then
-        print("⚠ No es un arma CGS/CBC reconocida")
+        print("⚠ No es arma CGS/CBC")
     end
-    print("--- Stash 0-8 ---")
-    for index = 0, 8 do
+
+    print("--- Stash (0-" .. tostring(STASH_SIZE-1) .. ") ---")
+    for index = 0, STASH_SIZE - 1 do
         local name, occupied = slotInfo(index)
         if occupied then
             local label = "r" .. index .. ": " .. tostring(name)
-            if matchesList(name, ALL_AMMO) then label = label .. " [AMMO]"
+            if name:lower():find("redstone", 1, true) then label = label .. " [FUEL]"
+            elseif matchesList(name, ALL_AMMO) then label = label .. " [AMMO]"
             elseif isWeapon(name) then label = label .. " [GUN]"
-            elseif name:lower():find("redstone", 1, true) then label = label .. " [FUEL]"
             end
             print(label)
         else
@@ -604,14 +563,14 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v9 | " .. state.mode
+                        unitName .. " | v9.1 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
                         .. " | shots=" .. tostring(shotsFired) .. "/" .. tostring(currentMagCap))
                 elseif command == "dump" then
                     local lines = { "MANO: " .. tostring(handInfo() or "vacia") }
-                    for i = 0, 8 do
+                    for i = 0, STASH_SIZE - 1 do
                         local n, o = slotInfo(i)
                         lines[#lines + 1] = "r" .. i .. ": " .. (o and tostring(n) or "[vacia]")
                     end
@@ -670,7 +629,6 @@ local function patrol(home, state, unit)
         local self = android.getSelf()
         local task = android.currentTask()
 
-        -- Retirada crítica
         if self.health and self.health <= RETREAT_HEALTH and task ~= "idle" then
             android.cancelTask()
             task = "idle"
@@ -682,19 +640,16 @@ local function patrol(home, state, unit)
         end
 
         if task == "idle" then
-            -- Curarse
             if os.clock() - lastHealAttempt >= HEAL_RETRY_DELAY then
                 tryHeal()
                 lastHealAttempt = os.clock()
             end
 
-            -- Recogida
             if os.clock() - lastRoleDropScan >= PICKUP_SCAN_DELAY then
                 collectRoleDrops()
                 lastRoleDropScan = os.clock()
             end
 
-            -- Repostaje
             local fuel = android.fuelLevel()
             if fuel < REFUEL_AT
                 and os.clock() - lastRefuelAttempt >= REFUEL_RETRY_DELAY then
@@ -708,7 +663,6 @@ local function patrol(home, state, unit)
                 end
             end
 
-            -- Lógica principal
             if fuel < 1 then
                 sleep(SCAN_DELAY)
             elseif state.mode == "return"
@@ -761,7 +715,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v9 detenido.")
+    print("Fusilero v9.1 detenido.")
 end
 
 local ok, err = pcall(main)
