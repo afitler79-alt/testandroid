@@ -1,0 +1,65 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="androidscompat"
+version="${file.jarVersion}"
+displayName="CC:Androids Compatibility"
+authors="Puentenorte"
+description='''
+Adds server-side compatibility between CC:Androids and NTGL weapons.
+Androids acquire hostile targets while holding an NTGL weapon, allowing NTGL
+to handle ranged attacks, ammunition and reloading. Androids mounted in
+Immersive Aircraft vehicles can pilot, bomb ground enemies and fire at other
+aircraft.
+'''
+
+[[dependencies.androidscompat]]
+modId="forge"
+mandatory=true
+versionRange="[47,48)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="cc_androids"
+mandatory=true
+versionRange="[1.3.0,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="ntgl"
+mandatory=false
+versionRange="[3.1.2,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="cgs"
+mandatory=false
+versionRange="[1.4.4,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="man_of_many_planes"
+mandatory=false
+versionRange="[0.2.1,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.androidscompat]]
+modId="immersive_aircraft"
+mandatory=false
+versionRange="[1.5.0,)"
+ordering="AFTER"
+side="BOTH"

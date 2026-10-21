@@ -1,5 +1,7 @@
--- BASE DE ROLES AEREOS
--- Uso: shell.run("rol_avion.lua", "combat|bomber|transport")
+-- SCRIPT AEREO GENERICO AUTONOMO.
+-- Los roles concretos (piloto_combate.lua, bombardero.lua y
+-- transportador_cargas.lua) ya no dependen de este archivo; este queda como
+-- alternativa manual ejecutable con el rol como argumento: combat|bomber|transport
 
 local role = tostring((...))
 local labels = {
@@ -109,20 +111,27 @@ local function loadOwners()
     return owners
 end
 
+local currentUnit
+local function unitId()
+    return tostring((currentUnit and (currentUnit.uuid or currentUnit.UUID)) or "")
+end
+
 local function requestAutopilot()
     -- AndroidsCompat intercepta este mensaje en el servidor y monta al Android
     -- en el avion vacio mas cercano, asignando tambien el rol.
-    pcall(android.sendChatMessage, "!androidscompat autopilot " .. role)
+    pcall(android.sendChatMessage, "!androidscompat autopilot " .. role
+        .. " " .. unitId())
 end
 
 local function requestOrder(order, target)
-    local message = "!androidscompat order " .. order
+    local message = "!androidscompat order " .. unitId() .. " " .. order
     if target and target ~= "" then message = message .. " " .. target end
     pcall(android.sendChatMessage, message)
 end
 
 local function main()
     local unit = android.getSelf()
+    currentUnit = unit
     local owners = loadOwners()
     local lastFuel = -REFUEL_RETRY
     local lastAutopilot = -AUTOPILOT_RETRY
@@ -176,8 +185,16 @@ local function main()
                         command = command:lower()
                         if command == "mount" then
                             requestAutopilot()
+                        elseif command == "capture" then
+                            pcall(android.sendChatMessage, "!androidscompat capture")
+                        elseif command == "imprison" then
+                            pcall(android.sendChatMessage, "!androidscompat imprison")
+                        elseif command == "release" then
+                            pcall(android.sendChatMessage, "!androidscompat release")
                         elseif command == "patrol" or command == "return"
-                            or command == "hold" or command == "follow" then
+                            or command == "hold" or command == "follow"
+                            or command == "guard" or command == "rescue"
+                            or command == "logistics" then
                             requestOrder(command, argument)
                         elseif command == "status" then
                             pcall(android.sendChatMessage,
