@@ -1,15 +1,15 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v13.1 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- ROL FUSILERO v14 (CC:Androids 1.3.0 / Forge 1.20.1)
 -- NTGL 3.1.2: Left=disparo+recarga | Right=apuntar
+-- slotOccupied: compara en minúscula (captura "empty", "Empty", "a", etc.)
 -- NO ataca sin arma CGS/CBC en mano.
--- Si tiene munición en mano, la guarda y busca el arma.
 -- Stash: 11 ranuras (0-10). Escaneo dinámico.
 -- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
 -- ═══════════════════════════════════════════════════════════════
 
 local SCAN_DELAY = 0.8
-local PATROL_RADIUS = 5
+local PATROL_RADIUS = 8
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 15
 local REFUEL_SAFE_RADIUS_SQ = 20*20
@@ -199,14 +199,17 @@ local function apiFailed(value)
     return type(value) == "table" and value[1] == true
 end
 
+-- CORREGIDO: compara todo en minúscula
+-- getSlotInfo devuelve: true (ocupada), false/"empty"/"Empty"/"a" (vacía)
 local function slotOccupied(index)
     local ok, result = pcall(android.getSlotInfo, index)
     if not ok then return false end
     if type(result) == "boolean" then return result end
     if type(result) == "string" then
-        return result ~= "" and result ~= "Empty"
-            and result ~= "minecraft:air" and result ~= "air"
-            and result ~= "a"
+        local lower = result:lower()
+        return lower ~= "" and lower ~= "empty"
+            and lower ~= "minecraft:air" and lower ~= "air"
+            and lower ~= "a"
     end
     return false
 end
@@ -258,6 +261,7 @@ local function isRedstone(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower()
     if lower:find("redstone_torch", 1, true) then return false end
+    if lower:find("redstone torch", 1, true) then return false end
     return lower:find("redstone", 1, true) ~= nil
 end
 
@@ -427,33 +431,29 @@ local function ensureWeapon()
     local held = handInfo()
     if held and isWeapon(held) then return true end
 
-    -- Si tiene munición u otro item en la mano, guardarlo
     if held then
         local stashSlot = findAnyEmptySlot()
         if stashSlot then
             pcall(android.storeItem, stashSlot)
             if isAmmo(held) then
-                print("Munición guardada en r" .. stashSlot .. " (no es arma)")
+                print("Munición guardada en r" .. stashSlot)
             end
         end
     end
 
     local weaponSlot = findWeaponSlot()
     if not weaponSlot then
-        -- Diagnóstico: mostrar qué hay en la stash
-        print("ensureWeapon: SIN ARMA en stash. Contenido:")
+        print("ensureWeapon: SIN ARMA en stash.")
         for i = 0, STASH_SIZE - 1 do
             if slotOccupied(i) then
-                local ok, eq = pcall(android.equipSlot, i)
-                if ok and not apiFailed(eq) then
-                    local n = handInfo()
-                    if n then
-                        print("  r" .. i .. ": " .. n
-                            .. " [wep=" .. tostring(isWeapon(n))
-                            .. " ammo=" .. tostring(isAmmo(n)) .. "]")
-                    end
-                    pcall(android.storeItem, i)
+                pcall(android.equipSlot, i)
+                local n = handInfo()
+                if n then
+                    print("  r" .. i .. ": " .. n
+                        .. " [wep=" .. tostring(isWeapon(n))
+                        .. " ammo=" .. tostring(isAmmo(n)) .. "]")
                 end
+                pcall(android.storeItem, i)
             end
         end
         return false
@@ -587,7 +587,6 @@ local function engage(mob)
 
     local weapon = handInfo()
 
-    -- Sin arma: guardar munición si la hay, buscar arma, SIEMPRE moverse
     if not weapon or not isWeapon(weapon) then
         ensureWeapon()
         if distSq > MIN_RANGE_SQ then
@@ -596,7 +595,6 @@ local function engage(mob)
         return
     end
 
-    -- Con arma
     if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
     elseif distSq < MIN_RANGE_SQ then
@@ -634,7 +632,7 @@ local function tryHeal()
             if ok and not apiFailed(eq) then
                 local name = handInfo()
                 if name and (isPotion(name) or isFood(name)) then
-                    print("Comida/poción (r" .. index .. "). HP=" .. tostring(self.health))
+                    print("Comida/poción (r" .. index .. ")")
                     found = true
                     break
                 end
@@ -723,14 +721,27 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v13.1 ═══")
+    print("═══ Fusilero v14 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
     if weapon then
         print("  isWeapon=" .. tostring(isWeapon(weapon))
             .. " isAmmo=" .. tostring(isAmmo(weapon)))
     end
-    print("Refuel: solo sin hostiles a <20 bloques")
-    print("Timeout: " .. ATTACK_TIMEOUT .. "s")
+    print("Stash ocupadas:")
+    for i = 0, STASH_SIZE - 1 do
+        if slotOccupied(i) then
+            pcall(android.equipSlot, i)
+            local n = handInfo()
+            if n then
+                print("  r" .. i .. ": " .. n
+                    .. " [wep=" .. tostring(isWeapon(n))
+                    .. " ammo=" .. tostring(isAmmo(n))
+                    .. " fuel=" .. tostring(isRedstone(n)) .. "]")
+            end
+            pcall(android.storeItem, i)
+        end
+    end
+    print("PATROL_RADIUS=" .. PATROL_RADIUS .. " | Timeout=" .. ATTACK_TIMEOUT .. "s")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -804,7 +815,7 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v13.1 | " .. state.mode
+                        unitName .. " | v14 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
@@ -975,7 +986,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v13.1 detenido.")
+    print("Fusilero v14 detenido.")
 end
 
 local ok, err = pcall(main)
