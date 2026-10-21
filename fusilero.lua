@@ -1,4 +1,4 @@
--- FUSILERO v25 - adaptado a androidscompat + NTGL
+-- FUSILERO v26 - adaptado a androidscompat + NTGL
 -- CC:Androids 1.3.0 / Create: Gunsmithing
 --
 -- Al arrancar imprime las funciones de "android" disponibles.
@@ -9,6 +9,8 @@
 -- Con androidscompat instalado, el disparo lo hace NTGL en servidor mediante
 -- GunAttackGoal. Este Lua no llama attack/useEntity: ambos son interacciones
 -- distintas del disparo NTGL.
+-- La recarga automatica, el objetivo, la armadura y la mochila los gestiona
+-- androidscompat en el servidor.
 -- La recarga automática también la gestiona NTGL; R permite solicitarla manualmente.
 
 local SCAN_DELAY      = 0.8
@@ -359,9 +361,7 @@ local function waitStop()
         local _,k=os.pullEvent("key")
         if k==keys.q then return end
         if k==keys.r then
-            -- El addon convierte este mensaje en una recarga real de NTGL.
-            local ok=pcall(android.sendChatMessage,"!androidscompat reload")
-            print(ok and "Recarga solicitada (R)" or "No se pudo solicitar la recarga")
+            print("Recarga automatica: androidscompat/NTGL")
         end
     end
 end
@@ -378,24 +378,11 @@ local function listen(unit,state,owners)
                 elseif c=="resume" or c=="patrol" then state.mode="patrol"
                 elseif c=="return" then state.mode="return" pcall(android.cancelTask)
                 elseif c=="reload" then
-                    pcall(android.sendChatMessage,"!androidscompat reload")
-                    print("Recarga solicitada por chat")
-                elseif c=="fire" and arg~="" then
-                    local valid=true
-                    for p in arg:gmatch("[^+]+") do
-                        if FORBIDDEN_FIRE_METHODS[p]
-                            or (p~="cancel" and not ALLOWED_FIRE_METHODS[p])
-                            or (p~="cancel" and not hasFn(p)) then
-                            valid=false
-                        end
-                    end
-                    if valid then
-                        fireMethod=nil
-                        print("Ignorado: el disparo lo controla androidscompat/NTGL")
-                        pcall(android.sendChatMessage,"disparo=androidscompat/NTGL")
-                    else
-                        pcall(android.sendChatMessage,"Metodo bloqueado o inexistente: "..arg)
-                    end
+                    print("Recarga automatica activa: androidscompat/NTGL")
+                elseif c=="fire" then
+                    fireMethod=nil
+                    print("Disparo gestionado por androidscompat/NTGL; no se usa attack()")
+                    pcall(android.sendChatMessage,"disparo=androidscompat/NTGL; recarga=automatica")
                 elseif c=="test" then
                     state.testShot=true
                 elseif c=="status" then
@@ -404,7 +391,8 @@ local function listen(unit,state,owners)
                         .."|HP="..tostring(s.health)
                         .."|fuel="..tostring(android.fuelLevel())
                         .."|wep="..tostring(hand() or "-")
-                        .."|fire="..tostring(fireMethod))
+                        .."|backend=androidscompat/NTGL"
+                        .."|equip=armadura+mochila")
                 end
             end
         end
@@ -425,17 +413,13 @@ local function main()
     table.sort(fns)
     print("android.* = "..table.concat(fns,", "))
 
-    fireMethod=pickFireMethod()
-    if fireMethod then
-        print("Metodo NTGL: "..fireMethod)
-    else
-        print("Disparo: delegado a androidscompat -> NTGL GunAttackGoal")
-        print("No uso attack/useEntity: ambos estan bloqueados")
-    end
+    fireMethod=nil
+    print("Disparo: delegado a androidscompat -> NTGL GunAttackGoal")
+    print("No se usa attack/useEntity; recarga y equipamiento los gestiona el addon")
     print("Modo: solo disparo | armas CGS reconocidas: "..tostring(#CGS_WEAPON_IDS))
-    print("Cambiar: !jarvis all fire <metodo NTGL> | test = prueba el disparo")
+    print("Disparo y recarga: androidscompat/NTGL | !jarvis all test = diagnostico")
     print("Inventario: "..invSummary(scanInventory()))
-    print("Pulsa R para recargar | Q para detener")
+    print("Pulsa Q para detener | usa /androidscompat reload como jugador")
     equipWeapon()
 
     local points={
