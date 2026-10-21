@@ -263,8 +263,9 @@ end
 
 -- Refuel desde FUEL_SLOT (solo cuando fuel bajo y sin combate)
 local function doRefuel()
-    if inCombat then return end
-    if os.clock()-lastCombatEnd < 5 then return end
+    -- El repostaje se ejecuta desde el bucle idle. No lo bloqueamos solo
+    -- porque haya un enemigo cerca: con poco combustible el androide debe
+    -- poder repostar y después reanudar el combate.
 
     local heldName = hand()
     local fuelInHand = heldName and isFuel(heldName)
@@ -300,7 +301,7 @@ local function doRefuel()
     end
 
     local before = android.fuelLevel()
-    pcall(android.refuel,1)
+    local called,refuelResult=pcall(android.refuel,1)
     local after = android.fuelLevel()
 
     local rem = hand()
@@ -309,6 +310,10 @@ local function doRefuel()
 
     if after > before then
         print("Fuel -> "..tostring(after))
+    elseif not called then
+        print("Refuel: error API -> "..tostring(refuelResult))
+    else
+        print("Refuel: no aumento de combustible")
     end
 end
 
@@ -591,8 +596,7 @@ local function main()
                 local fuel=android.fuelLevel()
                 if fuel<REFUEL_AT
                     and now-lastRefuel>=REFUEL_RETRY_DELAY
-                    and not inCombat
-                    and (now-lastCombatEnd)>=5 then
+                    then
                     doRefuel()
                     lastRefuel=now
                     fuel=android.fuelLevel()
