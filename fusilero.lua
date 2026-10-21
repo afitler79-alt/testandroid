@@ -1,7 +1,7 @@
--- FUSILERO v18 FINAL
+-- FUSILERO v18.1 FINAL
 -- CC:Androids 1.3.0 / NTGL 3.1.2
--- Ranuras fijas. Sin escaneo constante.
--- Left=disparo+recarga | Right=apuntar
+-- Ranuras fijas. findFreeSlot usa getSlotInfo (NO equipa).
+-- Solo equipa en refuel o al arrancar.
 
 local FUEL_SLOT = 0
 local WEAPON_SLOT = 1
@@ -53,14 +53,6 @@ local AMMO_IDS = {
     "cbc:ballistic_gatling_round","cbc:ballistic_grenade",
     "cbc:ballistic_minigun_round","cbc:cannon_shot",
 }
-local FOOD_IDS = {
-    "minecraft:cooked_beef","minecraft:cooked_porkchop",
-    "minecraft:cooked_chicken","minecraft:cooked_mutton",
-    "minecraft:golden_carrot","minecraft:golden_apple",
-    "minecraft:bread","minecraft:cooked_cod","minecraft:cooked_salmon",
-}
-local POTION_IDS = {"minecraft:potion","minecraft:splash_potion"}
-
 local TARGETS = {
     "minecraft:zombie","minecraft:skeleton","minecraft:spider",
     "minecraft:creeper","minecraft:witch","minecraft:drowned",
@@ -140,20 +132,29 @@ local function isFuel(n)
     return l:find("redstone",1,true)~=nil
 end
 
+-- SOLO lee con getSlotInfo. NO equipa nada.
+local function slotEmpty(i)
+    local ok,r = pcall(android.getSlotInfo,i)
+    if not ok then return true end
+    if type(r)=="boolean" then return not r end
+    if type(r)=="string" then
+        local l=r:lower()
+        return l=="" or l=="empty" or l=="minecraft:air" or l=="air" or l=="a"
+    end
+    return true
+end
+
+-- Busca ranura libre SIN equipar nada
 local function findFreeSlot(exclude)
     for i=0,STASH_SIZE-1 do
-        if i~=exclude then
-            local ok,r = pcall(android.equipSlot,i)
-            if ok and not fail(r) then
-                pcall(android.storeItem,i)
-            else
-                return i
-            end
+        if i~=exclude and slotEmpty(i) then
+            return i
         end
     end
     return nil
 end
 
+-- Equipar arma desde WEAPON_SLOT (solo cuando hace falta)
 local function equipWeapon()
     local h = hand()
     if h and isWep(h) then return true end
@@ -162,7 +163,8 @@ local function equipWeapon()
     if h then
         tmp = findFreeSlot(WEAPON_SLOT)
         if not tmp then return false end
-        pcall(android.storeItem,tmp)
+        local ok,r = pcall(android.storeItem,tmp)
+        if not ok or fail(r) then return false end
     end
 
     local ok,r = pcall(android.equipSlot,WEAPON_SLOT)
@@ -182,6 +184,7 @@ local function equipWeapon()
     return false
 end
 
+-- Refuel desde FUEL_SLOT (solo cuando fuel bajo y sin combate)
 local function doRefuel()
     if inCombat then return end
     if os.clock()-lastCombatEnd < 5 then return end
@@ -191,7 +194,8 @@ local function doRefuel()
     if h then
         tmp = findFreeSlot(FUEL_SLOT)
         if not tmp then return end
-        pcall(android.storeItem,tmp)
+        local ok,r = pcall(android.storeItem,tmp)
+        if not ok or fail(r) then return end
     end
 
     local ok,r = pcall(android.equipSlot,FUEL_SLOT)
@@ -204,7 +208,7 @@ local function doRefuel()
     if not n or not isFuel(n) then
         if n then pcall(android.storeItem,FUEL_SLOT) end
         if tmp then pcall(android.equipSlot,tmp) end
-        print("Refuel: r"..FUEL_SLOT.." sin redstone ("..tostring(n)..")")
+        print("Refuel: r"..FUEL_SLOT.." sin redstone")
         return
     end
 
@@ -358,7 +362,7 @@ local function main()
         return
     end
 
-    print("=== v18 ===")
+    print("=== v18.1 ===")
     print("FUEL_SLOT="..FUEL_SLOT)
     print("WEAPON_SLOT="..WEAPON_SLOT)
     print("Mano: "..tostring(hand() or "VACIA"))
