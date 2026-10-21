@@ -1,8 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════
--- ROL FUSILERO v13 (CC:Androids 1.3.0 / Forge 1.20.1)
+-- ROL FUSILERO v13.1 (CC:Androids 1.3.0 / Forge 1.20.1)
 -- NTGL 3.1.2: Left=disparo+recarga | Right=apuntar
 -- NO ataca sin arma CGS/CBC en mano.
--- isWeapon: match exacto display + ID, excluye munición.
+-- Si tiene munición en mano, la guarda y busca el arma.
 -- Stash: 11 ranuras (0-10). Escaneo dinámico.
 -- Munición: en la HOTBAR del android.
 -- Enter detiene y cancela la tarea activa.
@@ -52,7 +52,7 @@ local MAG_CAPACITY = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- ARMAS (IDs)
+-- ARMAS
 -- ═══════════════════════════════════════════════════════════════
 local CGS_WEAPONS = {
     "cgs:flintlock", "cgs:revolver", "cgs:shotgun",
@@ -71,8 +71,6 @@ local ALL_WEAPONS = {}
 for _, w in ipairs(CGS_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 for _, w in ipairs(CBC_WEAPONS) do ALL_WEAPONS[#ALL_WEAPONS+1] = w end
 
--- Nombres display EXACTOS (getHandInfo puede devolver estos)
--- Solo nombres de ARMAS, nunca de munición.
 local WEAPON_DISPLAY_NAMES = {
     "flintlock", "revolver", "shotgun", "nailgun", "gatling",
     "blazegun", "launcher", "pneumatic hammer", "frag grenade",
@@ -82,7 +80,7 @@ local WEAPON_DISPLAY_NAMES = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- MUNICIÓN (IDs)
+-- MUNICIÓN
 -- ═══════════════════════════════════════════════════════════════
 local CGS_AMMO = {
     "cgs:paper_cartridge", "cgs:paper_shot",
@@ -111,10 +109,7 @@ local ALL_AMMO = {}
 for _, a in ipairs(CGS_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
 for _, a in ipairs(CBC_AMMO) do ALL_AMMO[#ALL_AMMO+1] = a end
 
--- Nombres display de munición (para excluir de isWeapon)
 local AMMO_DISPLAY_NAMES = {
-    "bullet", "round", "cartridge", "shot", "nail",
-    "rocket", "spear", "lead ball", "shell", "grenade",
     "flintlock bullet", "revolver round", "shotgun round",
     "gatling round", "piercing revolver round",
     "incendiary shotgun round", "steel nail",
@@ -138,13 +133,8 @@ local FOOD_DISPLAY_NAMES = {
     "beef ribs", "meat on a stick", "harvest stew", "chocolate bar",
 }
 
-local POTION_ITEMS = {
-    "minecraft:potion", "minecraft:splash_potion",
-}
-
-local POTION_DISPLAY_NAMES = {
-    "potion", "splash potion",
-}
+local POTION_ITEMS = { "minecraft:potion", "minecraft:splash_potion" }
+local POTION_DISPLAY_NAMES = { "potion", "splash potion" }
 
 -- ═══════════════════════════════════════════════════════════════
 -- RECOGIDA
@@ -232,22 +222,17 @@ local function handInfo()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- DETECCIÓN DE ITEMS (CORREGIDO)
--- isAmmo: match parcial por ID + match exacto display
--- isWeapon: EXCLUYE munición primero, luego match ID + display exacto
+-- DETECCIÓN DE ITEMS
 -- ═══════════════════════════════════════════════════════════════
 local function isAmmo(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower()
-    -- Match por ID (parcial: "cgs:revolver_round" contiene "cgs:revolver_round")
     for _, item in ipairs(ALL_AMMO) do
         if lower:find(item, 1, true) then return true end
     end
-    -- Match por display (exacto: "Revolver Round" == "revolver round")
     for _, item in ipairs(AMMO_DISPLAY_NAMES) do
         if lower == item then return true end
     end
-    -- Match parcial display solo para términos unívocos de munición
     if lower:find("round", 1, true) then return true end
     if lower:find("cartridge", 1, true) then return true end
     if lower:find("bullet", 1, true) then return true end
@@ -259,13 +244,10 @@ end
 local function isWeapon(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower()
-    -- PRIMERO: si es munición, NO es arma (evita "shotgun round" → "shotgun")
     if isAmmo(name) then return false end
-    -- Match por ID de arma (parcial)
     for _, item in ipairs(ALL_WEAPONS) do
         if lower:find(item, 1, true) then return true end
     end
-    -- Match por display (EXACTO: "Revolver" == "revolver")
     for _, item in ipairs(WEAPON_DISPLAY_NAMES) do
         if lower == item then return true end
     end
@@ -275,10 +257,7 @@ end
 local function isRedstone(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower()
-    -- "redstone" matchea "minecraft:redstone" y "Redstone"
-    -- PERO no "Redstone Torch" (antorcha no sirve de fuel)
     if lower:find("redstone_torch", 1, true) then return false end
-    if lower:find("redstone_block", 1, true) then return true end
     return lower:find("redstone", 1, true) ~= nil
 end
 
@@ -448,14 +427,41 @@ local function ensureWeapon()
     local held = handInfo()
     if held and isWeapon(held) then return true end
 
+    -- Si tiene munición u otro item en la mano, guardarlo
+    if held then
+        local stashSlot = findAnyEmptySlot()
+        if stashSlot then
+            pcall(android.storeItem, stashSlot)
+            if isAmmo(held) then
+                print("Munición guardada en r" .. stashSlot .. " (no es arma)")
+            end
+        end
+    end
+
     local weaponSlot = findWeaponSlot()
     if not weaponSlot then
-        if held then print("Sin arma CGS/CBC disponible.") end
+        -- Diagnóstico: mostrar qué hay en la stash
+        print("ensureWeapon: SIN ARMA en stash. Contenido:")
+        for i = 0, STASH_SIZE - 1 do
+            if slotOccupied(i) then
+                local ok, eq = pcall(android.equipSlot, i)
+                if ok and not apiFailed(eq) then
+                    local n = handInfo()
+                    if n then
+                        print("  r" .. i .. ": " .. n
+                            .. " [wep=" .. tostring(isWeapon(n))
+                            .. " ammo=" .. tostring(isAmmo(n)) .. "]")
+                    end
+                    pcall(android.storeItem, i)
+                end
+            end
+        end
         return false
     end
 
     local tempSlot
-    if held then
+    local held2 = handInfo()
+    if held2 then
         tempSlot = findEmptySlot(weaponSlot)
         if not tempSlot then return false end
         pcall(android.storeItem, tempSlot)
@@ -475,7 +481,6 @@ local function ensureWeapon()
         return true
     end
 
-    -- NO es un arma (es munición u otro item), devolver
     if newWeapon then pcall(android.storeItem, weaponSlot) end
     if tempSlot then pcall(android.equipSlot, tempSlot) end
     return false
@@ -513,7 +518,7 @@ local function refuel()
         tempSlot = findEmptySlot(fuelSlot)
         if not tempSlot then return false, "sin ranura libre" end
         local ok, err = pcall(android.storeItem, tempSlot)
-        if not ok or apiFailed(err) then return false, "no se guardó arma" end
+        if not ok or apiFailed(err) then return false, "no se guardó" end
     end
 
     local ok, result = pcall(android.equipSlot, fuelSlot)
@@ -546,14 +551,13 @@ local function refuel()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COMBATE (requiere arma en mano)
+-- COMBATE
 -- ═══════════════════════════════════════════════════════════════
 local function fireAt(mob)
     local now = os.clock()
     if now - lastFireTime < FIRE_COOLDOWN then return false end
 
     local weapon = handInfo()
-
     if not weapon or not isWeapon(weapon) then
         ensureWeapon()
         return false
@@ -583,14 +587,16 @@ local function engage(mob)
 
     local weapon = handInfo()
 
+    -- Sin arma: guardar munición si la hay, buscar arma, SIEMPRE moverse
     if not weapon or not isWeapon(weapon) then
         ensureWeapon()
-        if distSq > COMBAT_RANGE_SQ then
+        if distSq > MIN_RANGE_SQ then
             android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
         end
         return
     end
 
+    -- Con arma
     if distSq > COMBAT_RANGE_SQ then
         android.moveTo({ x = mob.posX, y = mob.posY, z = mob.posZ })
     elseif distSq < MIN_RANGE_SQ then
@@ -717,18 +723,14 @@ end
 -- ═══════════════════════════════════════════════════════════════
 local function reportLoadout()
     local weapon = handInfo()
-    print("═══ Fusilero v13 ═══")
+    print("═══ Fusilero v13.1 ═══")
     print("Arma: " .. tostring(weapon or "VACÍA"))
-    if weapon and isWeapon(weapon) then
-        print("→ RECONOCIDA: Left=disparo | Right=apuntar")
-    elseif weapon then
-        print("→ NO reconocida como arma CGS/CBC: " .. weapon)
-        print("  (isAmmo=" .. tostring(isAmmo(weapon)) .. ")")
-    else
-        print("→ Buscará arma en stash")
+    if weapon then
+        print("  isWeapon=" .. tostring(isWeapon(weapon))
+            .. " isAmmo=" .. tostring(isAmmo(weapon)))
     end
     print("Refuel: solo sin hostiles a <20 bloques")
-    print("Timeout ataque: " .. ATTACK_TIMEOUT .. "s")
+    print("Timeout: " .. ATTACK_TIMEOUT .. "s")
     print("Objetivos: " .. #TARGET_TYPES)
     print("═══════════════════")
 end
@@ -758,7 +760,7 @@ local function loadOwners()
         print("Propietarios: " .. #names)
         return owners
     end
-    print("Jugadores autorizados (separados por comas):")
+    print("Jugadores autorizados (comas):")
     local owners, names = parseOwners(read())
     while #names == 0 do
         print("Escribe al menos un nombre:")
@@ -802,12 +804,12 @@ local function listenForCommands(unit, state, owners)
                     local cur = android.getSelf()
                     local w = handInfo()
                     pcall(android.sendChatMessage,
-                        unitName .. " | v13 | " .. state.mode
+                        unitName .. " | v13.1 | " .. state.mode
                         .. " | HP=" .. tostring(cur.health)
                         .. " | fuel=" .. tostring(android.fuelLevel())
                         .. " | arma=" .. tostring(w or "—")
-                        .. " | isWep=" .. tostring(isWeapon(w or ""))
-                        .. " | isAmmo=" .. tostring(isAmmo(w or ""))
+                        .. " | wep=" .. tostring(isWeapon(w or ""))
+                        .. " | ammo=" .. tostring(isAmmo(w or ""))
                         .. " | combat=" .. tostring(inCombat))
                 elseif command == "rescan" then
                     cachedFuelSlot = nil
@@ -863,7 +865,7 @@ local function patrol(home, state, unit)
                 lastTarget = nil
                 inCombat = false
                 lastCombatEnd = now
-                print("Timeout ataque (" .. ATTACK_TIMEOUT .. "s); cancelando.")
+                print("Timeout ataque; cancelando.")
             end
         end
 
@@ -973,7 +975,7 @@ local function main()
         function() listenForCommands(self, state, owners) end
     )
     android.cancelTask()
-    print("Fusilero v13 detenido.")
+    print("Fusilero v13.1 detenido.")
 end
 
 local ok, err = pcall(main)
