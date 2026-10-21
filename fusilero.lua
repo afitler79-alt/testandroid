@@ -1,16 +1,15 @@
 -- ═══════════════════════════════════════════════════════════════
--- FUSILERO v17 FINAL
--- CC:Androids 1.3.0 / Forge 1.20.1 / NTGL 3.1.2
+-- FUSILERO v17.1 FINAL
+-- CC:Androids 1.3.0 / NTGL 3.1.2
+-- API: equipSlot/storeItem solo 0-8. getSlotInfo 0-9.
 -- Left=disparo+recarga | Right=apuntar
--- Escaneo: equipSlot directo (no depende de getSlotInfo)
--- Enter detiene.
 -- ═══════════════════════════════════════════════════════════════
 
 local SCAN_DELAY = 0.8
 local PATROL_RADIUS = 8
 local REFUEL_AT = 20
 local REFUEL_RETRY_DELAY = 15
-local STASH_SIZE = 11
+local STASH_SIZE = 9
 local RETREAT_HEALTH = 6
 local ALERT_DELAY = 10
 local ATTACK_TIMEOUT = 15
@@ -21,9 +20,6 @@ local COMBAT_RANGE_SQ = 14*14
 local MIN_RANGE_SQ = 4*4
 local OWNERS_FILE = "owners.cfg"
 
--- ═══════════════════════════════════════════════════════════════
--- ITEMS
--- ═══════════════════════════════════════════════════════════════
 local WEAPONS = {
     "cgs:flintlock","cgs:revolver","cgs:shotgun","cgs:nailgun",
     "cgs:gatling","cgs:blazegun","cgs:launcher",
@@ -94,9 +90,6 @@ local TARGETS = {
     "vampirism:vampire","vampirism:ghoul","werewolves:werewolf",
 }
 
--- ═══════════════════════════════════════════════════════════════
--- ESTADO
--- ═══════════════════════════════════════════════════════════════
 local lastFire = 0
 local lastTarget = nil
 local inCombat = false
@@ -107,9 +100,6 @@ local weaponSlot = nil
 local lastScan = 0
 local SCAN_INTERVAL = 15
 
--- ═══════════════════════════════════════════════════════════════
--- HELPERS
--- ═══════════════════════════════════════════════════════════════
 local function fail(v) return type(v)=="table" and v[1]==true end
 
 local function hand()
@@ -163,9 +153,6 @@ local function isPot(n)
     return false
 end
 
--- ═══════════════════════════════════════════════════════════════
--- ESCANEO: equipSlot directo en cada ranura
--- ═══════════════════════════════════════════════════════════════
 local function scan()
     local h = hand()
     local saved = nil
@@ -221,14 +208,9 @@ local function scan()
 end
 
 local function ensureScan()
-    if os.clock() - lastScan >= SCAN_INTERVAL then
-        scan()
-    end
+    if os.clock() - lastScan >= SCAN_INTERVAL then scan() end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- EQUIPAR ARMA
--- ═══════════════════════════════════════════════════════════════
 local function equipWeapon()
     local h = hand()
     if h and isWep(h) then return true end
@@ -237,7 +219,7 @@ local function equipWeapon()
     if not weaponSlot then
         scan()
         if not weaponSlot then
-            print("SIN ARMA EN STASH. fuelSlot="..tostring(fuelSlot))
+            print("SIN ARMA. fuelSlot="..tostring(fuelSlot))
             return false
         end
     end
@@ -277,9 +259,6 @@ local function equipWeapon()
     return false
 end
 
--- ═══════════════════════════════════════════════════════════════
--- REFUEL
--- ═══════════════════════════════════════════════════════════════
 local function doRefuel()
     if inCombat then return end
     if os.clock()-lastCombatEnd < 5 then return end
@@ -288,7 +267,7 @@ local function doRefuel()
     if not fuelSlot then
         scan()
         if not fuelSlot then
-            print("REFUEL: sin redstone en stash.")
+            print("REFUEL: sin redstone en stash (0-8).")
             return
         end
     end
@@ -321,7 +300,6 @@ local function doRefuel()
     if not n or not isFuel(n) then
         if n then pcall(android.storeItem,fuelSlot) end
         if tmp then pcall(android.equipSlot,tmp) end
-        print("REFUEL: r"..fuelSlot.." no es redstone: "..tostring(n))
         return
     end
 
@@ -335,14 +313,9 @@ local function doRefuel()
 
     if after > before then
         print("Fuel → "..tostring(after))
-    else
-        print("Refuel no funcionó.")
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- COMBATE
--- ═══════════════════════════════════════════════════════════════
 local function findMob()
     local s = android.getSelf()
     local best, bestType, bestD
@@ -401,9 +374,6 @@ local function combat(mob)
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- CONTROL
--- ═══════════════════════════════════════════════════════════════
 local function parseOwners(input)
     local o,names={},{}
     for p in tostring(input):gmatch("[^,\n]+") do
@@ -457,7 +427,7 @@ local function listen(unit,state,owners)
                         .."|combat="..tostring(inCombat))
                 elseif c=="rescan" then
                     scan()
-                    pcall(android.sendChatMessage,"Rescan: fuel="..tostring(fuelSlot).." wep="..tostring(weaponSlot))
+                    pcall(android.sendChatMessage,"fuel="..tostring(fuelSlot).." wep="..tostring(weaponSlot))
                 elseif c=="dump" then
                     local lines={"MANO:"..tostring(hand() or "—")}
                     for i=0,STASH_SIZE-1 do
@@ -477,9 +447,6 @@ local function listen(unit,state,owners)
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- BUCLE
--- ═══════════════════════════════════════════════════════════════
 local function main()
     local s = android.getSelf()
     local home = {x=s.posX,y=s.posY,z=s.posZ}
@@ -487,11 +454,16 @@ local function main()
     local owners = loadOwners()
     if not owners then print("Sin owners.") return end
 
-    -- Escaneo inicial
     scan()
-    print("═══ v17 ═══")
+    print("═══ v17.1 ═══")
     print("Mano: "..tostring(hand() or "VACÍA"))
     print("fuelSlot="..tostring(fuelSlot).." weaponSlot="..tostring(weaponSlot))
+    if not fuelSlot then
+        print("!! MUEVE EL REDSTONE A LA STASH (arriba, no abajo) !!")
+    end
+    if not weaponSlot then
+        print("!! MUEVE EL REVOLVER A LA STASH (arriba, no abajo) !!")
+    end
     print("═══════════")
 
     local points = {
@@ -512,7 +484,6 @@ local function main()
                 local task=android.currentTask()
                 local now=os.clock()
 
-                -- Timeout
                 if task=="attacking" and lastTarget then
                     if now-attackStart>ATTACK_TIMEOUT then
                         android.cancelTask() task="idle"
@@ -520,7 +491,6 @@ local function main()
                     end
                 end
 
-                -- Retirada
                 if self.health and self.health<=RETREAT_HEALTH and task~="idle" then
                     android.cancelTask() task="idle"
                     if now-lastAlert>=ALERT_DELAY then
@@ -531,19 +501,16 @@ local function main()
 
                 if task~="idle" then sleep(SCAN_DELAY) return end
 
-                -- Detectar combate
                 local mob,mobType=findMob()
                 local wasC=inCombat
                 inCombat=(mob~=nil)
                 if wasC and not inCombat then lastCombatEnd=now end
 
-                -- Arma (cada 15s)
                 if not inCombat and now-lastWep>=15 then
                     equipWeapon()
                     lastWep=now
                 end
 
-                -- Refuel
                 local fuel=android.fuelLevel()
                 if fuel<REFUEL_AT and now-lastRefuel>=REFUEL_RETRY_DELAY
                     and not inCombat and (now-lastCombatEnd)>=5 then
@@ -552,7 +519,6 @@ local function main()
                     fuel=android.fuelLevel()
                 end
 
-                -- Lógica
                 if fuel<1 then
                     sleep(SCAN_DELAY)
                 elseif state.mode=="return" or (self.health and self.health<=RETREAT_HEALTH) then
