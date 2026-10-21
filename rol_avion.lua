@@ -115,6 +115,12 @@ local function requestAutopilot()
     pcall(android.sendChatMessage, "!androidscompat autopilot " .. role)
 end
 
+local function requestOrder(order, target)
+    local message = "!androidscompat order " .. order
+    if target and target ~= "" then message = message .. " " .. target end
+    pcall(android.sendChatMessage, message)
+end
+
 local function main()
     local unit = android.getSelf()
     local owners = loadOwners()
@@ -163,13 +169,16 @@ local function main()
                 if event == "key" and data == keys.q then return end
                 if event == "onChatMessage" and type(data) == "table"
                     and owners[tostring(data.senderName or ""):lower()] then
-                    local target, command = tostring(data.message or "")
-                        :match("^!avion%s+(%S+)%s+(%S+)")
+                    local target, command, argument = tostring(data.message or "")
+                        :match("^!avion%s+(%S+)%s+(%S+)%s*(%S*)")
                     if target and (target:lower() == "all"
                         or target:lower() == tostring(unit.name):lower()) then
                         command = command:lower()
                         if command == "mount" then
                             requestAutopilot()
+                        elseif command == "patrol" or command == "return"
+                            or command == "hold" or command == "follow" then
+                            requestOrder(command, argument)
                         elseif command == "status" then
                             pcall(android.sendChatMessage,
                                 labels[role] .. " | modo=" .. role
