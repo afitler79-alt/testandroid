@@ -155,6 +155,7 @@ end
 
 -- Busca redstone en cualquier ranura; getSlotInfo solo consulta el inventario.
 local function findFuelSlot()
+    local found = {}
     for i=0,STASH_SIZE-1 do
         local ok,n,occupied = pcall(android.getSlotInfo,i)
         if ok then
@@ -165,9 +166,12 @@ local function findFuelSlot()
             end
             if isFuel(n) then return i end
             if type(occupied)=="string" and isFuel(occupied) then return i end
+            found[#found+1] = "r"..i.."="..tostring(n)
+        else
+            found[#found+1] = "r"..i.."=error"
         end
     end
-    return nil
+    return nil, table.concat(found, ", ")
 end
 
 local WEAPON_PRIORITY = {
@@ -238,10 +242,10 @@ local function doRefuel()
 
     local heldName = hand()
     local fuelInHand = heldName and isFuel(heldName)
-    local fuelSlot
-    if not fuelInHand then fuelSlot = findFuelSlot() end
+    local fuelSlot, inventoryInfo
+    if not fuelInHand then fuelSlot, inventoryInfo = findFuelSlot() end
     if not fuelInHand and fuelSlot == nil then
-        print("Refuel: no se encontró redstone en la mochila")
+        print("Refuel: sin redstone; inventario: "..tostring(inventoryInfo))
         return
     end
 
@@ -375,7 +379,7 @@ end
 local function waitStop()
     while true do
         local _,k=os.pullEvent("key")
-        if k==keys.enter then return end
+        if k==keys.q then return end
     end
 end
 
@@ -419,7 +423,8 @@ local function main()
         return
     end
 
-    print("=== v18.1 ===")
+    print("=== v18.2 ===")
+    print("Pulsa Q para detener")
     print("FUEL_SLOT=dinámico")
     print("Arma: selección automática CGS")
     print("Mano: "..tostring(hand() or "VACIA"))
