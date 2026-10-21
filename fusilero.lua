@@ -357,6 +357,11 @@ local function waitStop()
     while true do
         local _,k=os.pullEvent("key")
         if k==keys.q then return end
+        if k==keys.r then
+            -- El addon convierte este mensaje en una recarga real de NTGL.
+            local ok=pcall(android.sendChatMessage,"!androidscompat reload")
+            print(ok and "Recarga solicitada (R)" or "No se pudo solicitar la recarga")
+        end
     end
 end
 
@@ -426,7 +431,7 @@ local function main()
     print("Modo: solo disparo | armas CGS reconocidas: "..tostring(#CGS_WEAPON_IDS))
     print("Cambiar: !jarvis all fire <metodo NTGL> | test = prueba el disparo")
     print("Inventario: "..invSummary(scanInventory()))
-    print("Pulsa Q para detener")
+    print("Pulsa R para recargar | Q para detener")
     equipWeapon()
 
     local points={
