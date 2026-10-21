@@ -1,4 +1,4 @@
--- FUSILERO v24 - adaptado a androidscompat + NTGL
+-- FUSILERO v25 - adaptado a androidscompat + NTGL
 -- CC:Androids 1.3.0 / Create: Gunsmithing
 --
 -- Al arrancar imprime las funciones de "android" disponibles.
@@ -9,6 +9,7 @@
 -- Con androidscompat instalado, el disparo lo hace NTGL en servidor mediante
 -- GunAttackGoal. Este Lua no llama attack/useEntity: ambos son interacciones
 -- distintas del disparo NTGL.
+-- La recarga automática también la gestiona NTGL; R permite solicitarla manualmente.
 
 local SCAN_DELAY      = 0.8
 local PATROL_RADIUS   = 8
@@ -376,6 +377,9 @@ local function listen(unit,state,owners)
                 if c=="hold" then state.mode="hold" pcall(android.cancelTask)
                 elseif c=="resume" or c=="patrol" then state.mode="patrol"
                 elseif c=="return" then state.mode="return" pcall(android.cancelTask)
+                elseif c=="reload" then
+                    pcall(android.sendChatMessage,"!androidscompat reload")
+                    print("Recarga solicitada por chat")
                 elseif c=="fire" and arg~="" then
                     local valid=true
                     for p in arg:gmatch("[^+]+") do

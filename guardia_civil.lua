@@ -1,7 +1,8 @@
--- GUARDIA CIVIL v19 - adaptada a androidscompat + NTGL
+-- GUARDIA CIVIL v20 - adaptada a androidscompat + NTGL
 -- CC:Androids 1.3.0 / Forge 1.20.1
 -- Busca armas por el nombre que informa getSlotInfo; no depende de una ranura fija.
 -- No simula clics: androidscompat entrega el objetivo a NTGL.
+-- NTGL recarga automáticamente; R o !guardia all reload solicitan recarga manual.
 -- Aviones: ejecuta como jugador /androidscompat mount cerca de un avión vacío.
 
 local SCAN_DELAY = 0.8
@@ -393,6 +394,9 @@ local function listen(unit,state,owners)
                 elseif c=="return" then
                     state.mode="return"
                     android.cancelTask()
+                elseif c=="reload" then
+                    pcall(android.sendChatMessage,"!androidscompat reload")
+                    print("Recarga solicitada por chat")
                 elseif c=="status" then
                     local s=android.getSelf()
                     local w=hand()

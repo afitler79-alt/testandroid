@@ -16,6 +16,9 @@ local REFUEL_RETRY = 15
 local STASH_SIZE = 9
 local OWNERS_FILE = "owners.cfg"
 
+-- El disparo, la municion y la recarga del armamento montado los gestiona
+-- androidscompat en el servidor; este script no simula clics.
+
 local function failed(value)
     return type(value) == "table" and value[1] == true
 end
@@ -124,6 +127,7 @@ local function main()
     print(label .. " activo")
     print("Ejecuta como jugador: /androidscompat mount")
     print("Selecciona el modo: /androidscompat mode " .. role)
+    print("Armamento y recarga: gestionados por androidscompat + NTGL")
     if role == "combat" then
         print("Ataca otros aviones y objetivos terrestres.")
     elseif role == "bomber" then
