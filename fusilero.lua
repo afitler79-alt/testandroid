@@ -309,35 +309,6 @@ end
 local function fireOnce(mob)
     -- Disparo delegado a androidscompat + NTGL. No simular clics desde Lua.
     return true,"delegado a androidscompat/NTGL"
-    -- Código antiguo conservado debajo como referencia; queda inalcanzable.
-    -- El addon androidscompat deja que NTGL gestione el disparo, la munición
-    -- y la recarga desde su GunAttackGoal. No hay que simular un clic aquí.
-    if not fireMethod then return true,"delegado a androidscompat/NTGL" end
-    -- fireMethod puede ser una secuencia de interacciones, pero nunca melee.
-    local steps={}
-    for p in fireMethod:gmatch("[^+]+") do steps[#steps+1]=p end
-    for i,step in ipairs(steps) do
-        local ok,r=true,nil
-        if FORBIDDEN_FIRE_METHODS[step] then
-            return false,"metodo bloqueado: no dispara NTGL"
-        elseif step~="cancel" and not ALLOWED_FIRE_METHODS[step] then
-            return false,"metodo no es un puente NTGL: "..tostring(step)
-        end
-        if step=="cancel" then
-            pcall(android.cancelTask)
-            sleep(0.2)
-        else
-            local fn=android[step]
-            if TAKES_UUID[step] then ok,r=pcall(fn,mob.uuid) else ok,r=pcall(fn) end
-            if not ok or fail(r) then
-                pcall(android.cancelTask)
-                return false,(type(r)=="table" and r[2]) or r
-            end
-            sleep(i<#steps and ADS_DELAY or FIRE_HOLD)
-        end
-    end
-    pcall(android.cancelTask) -- evita que el androide camine hacia el mob
-    return true
 end
 
 local lastErr=0
@@ -353,38 +324,6 @@ local function combat(mob)
     -- acercarse, apuntar, disparar, recargar y controlar armas del avión.
     return true
 
-    local now=os.clock()
-    if now-lastFire<FIRE_COOLDOWN then return true end
-
-    local s=android.getSelf()
-    local d=dist(s,mob)
-    if d>MAX_RANGE then
-        -- acercarse hasta STOP_RANGE
-        local f=(d-STOP_RANGE)/d
-        pcall(android.moveTo,{
-            x=s.posX+(mob.posX-s.posX)*f,
-            y=s.posY+(mob.posY-s.posY)*f,
-            z=s.posZ+(mob.posZ-s.posZ)*f })
-        return true
-    end
-
-    -- intentar mirar al mob si la API lo ofrece
-    for _,n in ipairs({"lookAt","faceEntity","face"}) do
-        if hasFn(n) then
-            if not pcall(android[n],mob.uuid) then
-                pcall(android[n],{x=mob.posX,y=mob.posY+1,z=mob.posZ})
-            end
-            break
-        end
-    end
-
-    lastFire=now
-    local ok,err=fireOnce(mob)
-    if not ok and os.clock()-lastErr>5 then
-        print("Disparo fallido ("..tostring(fireMethod).."): "..tostring(err))
-        lastErr=os.clock()
-    end
-    return ok
 end
 
 -- ---------------------------------------------------------------- owners / chat
